@@ -136,13 +136,141 @@ function updateCheckoutSummary(){const payments=paymentRows();const isFree=payme
 async function saveSale(e){e.preventDefault();const owner=document.getElementById('sf_owner'),bundle=document.getElementById('sf_bundle'),date=document.getElementById('sf_date'),draws=document.getElementById('sf_draws'),price=document.getElementById('sf_price'),discount=document.getElementById('sf_discount'),staff=document.getElementById('sf_staff'),note=document.getElementById('sf_note');if(!owner||!bundle||!date||!draws||!price)return toast('銷售表單載入異常，請重新整理後再試');const bid=bundle.value;if(!bid)return toast('請選擇套組');if(!date.value)return toast('請選擇日期');if(Number(draws.value||0)<=0)return toast('抽數需大於 0');if(Number(price.value||0)<0)return toast('一抽價格不可為負數');const payments=paymentRows();if(!payments.length)return toast('請至少選擇一種結帳方式並輸入金額');const isFree=payments.some(x=>x.method==='免單結束');if(isFree&&payments.length!==1)return toast('免單結束不可與其他付款方式同時使用');const total=isFree?0:orderTotal(),received=isFree?0:payments.reduce((a,x)=>a+x.amount,0);if(!isFree&&received<total)return toast(`實收不足，尚差 ${money(total-received)}`);const {error}=await sb.rpc('create_sale_with_payments',{p_owner_id:owner.value,p_bundle_id:bid,p_sale_date:date.value,p_draws:Number(draws.value||0),p_unit_price:Number(price.value||0),p_discount:isFree?0:-Math.abs(Number(discount?.value||0)),p_entered_by:staff?.value.trim()||null,p_note:note?.value.trim()||null,p_payments:payments});if(error)return toast('新增失敗：'+error.message);toast(isFree?'免單結束已建立':`銷售紀錄已新增，找零 ${money(received-total)}`);closeModal();await loadAll()}
 
 function openImportForm(){
- document.getElementById('modal').innerHTML=`<div class="modal"><div class="section-head"><h3>Excel 匯入雲端資料庫</h3><button class="btn" onclick="closeModal()">關閉</button></div><p class="muted">可直接選擇「套組＋銷售紀錄」Excel。系統會依你選擇的老闆匯入，套組編號會自動去重；銷售資料會以匯入指紋避免重複。</p><div class="form-grid"><div class="field"><label>資料所屬老闆</label><select id="imp_owner" required>${ownerOptions(selectedOwner==='ALL'?(owners[0]?.id||''):selectedOwner)}</select></div><div class="field"><label>Excel 檔案</label><input id="imp_file" type="file" accept=".xlsx,.xls" required></div><div class="field full"><label>匯入規則</label><div class="muted" style="line-height:1.7">① 套組：使用「編號」作為老闆內唯一鍵。<br>② 銷售：空白預留列會略過；日期空白時沿用上一筆有效日期，並用日期／編號／抽數／單價／折價／收款／填表人／備註產生匯入指紋。<br>③ Excel 裡的 #NAME? 品名會依編號回填套組品名。<br>④ Excel 內舊的收入／毛利不直接採用；系統只依實際銷售紀錄計算收入、抽數與毛利。</div></div></div><div class="modal-actions"><button class="btn" type="button" onclick="closeModal()">取消</button><button class="btn primary" onclick="importExcel()">開始匯入</button></div><div id="imp_status" class="muted" style="margin-top:12px"></div></div>`;
+ document.getElementById('modal').innerHTML=`<div class="modal"><div class="section-head"><h3>Excel 差異同步</h3><button class="btn" onclick="closeModal()">關閉</button></div><p class="muted">Excel 不再整批覆蓋資料庫。系統會先比對既有資料，只新增缺少項目、更新安全差異，資料庫中 Excel 沒出現的資料一律保留。</p><div class="form-grid"><div class="field"><label>資料所屬老闆</label><select id="imp_owner" required>${ownerOptions(selectedOwner==='ALL'?(owners[0]?.id||''):selectedOwner)}</select></div><div class="field"><label>Excel 檔案</label><input id="imp_file" type="file" accept=".xlsx,.xls" required></div><div class="field full"><label>差異同步規則</label><div class="muted" style="line-height:1.75">① 新套組：新增。既有套組：只更新 Excel 有值且確實不同的基本欄位。<br>② 狀態、結束日期：既有套組以網站資料庫為主，不被舊 Excel 覆蓋。<br>③ 歷史已刮數：只允許往前增加，不會被舊 Excel 往回蓋。<br>④ Excel 空白欄位不覆蓋資料庫已有內容；Excel 沒出現的資料也不刪除。<br>⑤ 銷售完全相同會略過；可明確辨識為同一筆的修改會更新；無法安全判斷的相似資料列為衝突，不自動亂改。<br>⑥ 匯入完成會顯示新增／更新／略過／衝突統計。</div></div></div><div class="modal-actions"><button class="btn" type="button" onclick="closeModal()">取消</button><button class="btn primary" onclick="importExcel()">開始差異同步</button></div><div id="imp_status" class="muted" style="margin-top:12px;line-height:1.6"></div></div>`;
  document.getElementById('modal').style.display='flex';
 }
 function xDate(v){if(v==null||v==='')return null;if(typeof v==='number'){const d=new Date(Date.UTC(1899,11,30)+v*86400000);return d.toISOString().slice(0,10)}if(v instanceof Date&&!isNaN(v))return v.toISOString().slice(0,10);const d=new Date(v);return isNaN(d)?null:d.toISOString().slice(0,10)}
 function xNum(v){if(v==null||v===''||v==='#NAME?')return null;const n=Number(String(v).replace(/,/g,''));return Number.isFinite(n)?n:null}
 function fingerprint(a){let str=a.map(v=>v==null?'':String(v).trim()).join('\u001f');let h=0;for(let i=0;i<str.length;i++){h=((h<<5)-h)+str.charCodeAt(i);h|=0}return 'excel_'+(h>>>0).toString(16)+'_'+btoa(unescape(encodeURIComponent(str))).slice(0,80).replace(/[^a-zA-Z0-9_-]/g,'');}
-async function importExcel(){const ownerId=document.getElementById('imp_owner').value;const file=document.getElementById('imp_file').files[0];const status=document.getElementById('imp_status');if(!file)return toast('請選擇 Excel');status.textContent='讀取 Excel 中…';try{const data=await file.arrayBuffer();const wb=XLSX.read(data,{type:'array',cellDates:true});const bs=XLSX.utils.sheet_to_json(wb.Sheets['套組'],{header:1,defval:null});const ss=XLSX.utils.sheet_to_json(wb.Sheets['銷售紀錄'],{header:1,defval:null});if(!bs.length||!ss.length)throw new Error('找不到「套組」或「銷售紀錄」工作表');const bmap=new Map();const bRows=[];for(const r of bs.slice(1)){const code=r[1],name=r[2];if(!code||code==='#NAME?'||!name||name==='#NAME?')continue;const prog=parseDrawProgress(r[6]);const rec={owner_id:ownerId,bundle_date:xDate(r[0]),code:String(code).trim(),product_name:String(name).trim(),cost:xNum(r[3])||0,draw_target:r[6]==null||r[6]===''?null:String(r[6]),historical_draws:prog.done,total_draw_target:prog.total,status:['進行中','結束','免單結束','腰斬','直購'].includes(String(r[7]||''))?String(r[7]):'進行中',price:r[9]==null||r[9]===''?null:String(r[9]),end_date:xDate(r[10])};bmap.set(rec.code,rec);bRows.push(rec)}status.textContent=`準備匯入 ${bRows.length} 個套組…`;if(bRows.length){const qb=await sb.from('bundles').upsert(bRows,{onConflict:'owner_id,code'});if(qb.error)throw qb.error}const {data:existingBundles,error:be}=await sb.from('bundles').select('id,code,product_name').eq('owner_id',ownerId);if(be)throw be;const idMap=new Map((existingBundles||[]).map(x=>[x.code,x]));const sRows=[];let lastSaleDate=null;for(const r of ss.slice(1)){const rowDate=xDate(r[0]);if(rowDate)lastSaleDate=rowDate;const code=r[1]==null||r[1]===''||r[1]==='#NAME?'?null:String(r[1]).trim();const drawsRaw=xNum(r[3]),unitRaw=xNum(r[4]),discountRaw=xNum(r[5]);const payment=r[7]==null||String(r[7]).trim()===''?null:String(r[7]).trim();const staff=r[8]==null||String(r[8]).trim()===''?null:String(r[8]).trim();const note=r[9]==null||String(r[9]).trim()===''?null:String(r[9]).trim();const meaningful=!!code||drawsRaw!=null||unitRaw!=null||discountRaw!=null||!!payment||!!staff||!!note;if(!meaningful)continue;const dt=rowDate||lastSaleDate;if(!dt)throw new Error('銷售紀錄有資料但找不到日期，請在該筆或其上方補上日期');let name=(r[2]==null||r[2]===''||r[2]==='#NAME?'||String(r[2]).startsWith('='))?null:String(r[2]).trim();if(!name&&code&&idMap.has(code))name=idMap.get(code).product_name;name=name||'未指定品名';const draws=Math.trunc(drawsRaw||0),unit=unitRaw||0,discount=discountRaw==null?0:-Math.abs(discountRaw);const base=[ownerId,dt,code,name,draws,unit,discount,payment,staff,note];sRows.push({owner_id:ownerId,bundle_id:code&&idMap.has(code)?idMap.get(code).id:null,sale_date:dt,bundle_code:code,product_name:name,draws,unit_price:unit,discount,payment_method:payment,entered_by:staff,note:note,import_source_key:fingerprint(base)})}const salesDrawByCode=new Map();for(const sr of sRows){if(sr.bundle_code)salesDrawByCode.set(sr.bundle_code,(salesDrawByCode.get(sr.bundle_code)||0)+Number(sr.draws||0));}for(const br of bRows){const excelDone=Number(br.historical_draws||0);const recorded=Number(salesDrawByCode.get(br.code)||0);br.historical_draws=Math.max(0,excelDone-recorded);}if(bRows.length){const qb2=await sb.from('bundles').upsert(bRows,{onConflict:'owner_id,code'});if(qb2.error)throw qb2.error;}status.textContent=`準備匯入 ${sRows.length} 筆銷售…`;for(let i=0;i<sRows.length;i+=100){const chunk=sRows.slice(i,i+100);const qs=await sb.from('sales').upsert(chunk,{onConflict:'import_source_key',ignoreDuplicates:true});if(qs.error)throw qs.error;status.textContent=`銷售匯入 ${Math.min(i+100,sRows.length)}/${sRows.length}…`}status.textContent='完成，重新整理資料…';toast(`匯入完成：${bRows.length} 個套組、${sRows.length} 筆銷售`);closeModal();await loadAll()}catch(err){status.textContent='匯入失敗：'+(err.message||err);toast(err.message||'Excel 匯入失敗')}}
+async function importExcel(){
+ const ownerId=document.getElementById('imp_owner').value;
+ const file=document.getElementById('imp_file').files[0];
+ const status=document.getElementById('imp_status');
+ if(!file)return toast('請選擇 Excel');
+ status.textContent='讀取 Excel 並比對資料庫中…';
+ try{
+  const data=await file.arrayBuffer();
+  const wb=XLSX.read(data,{type:'array',cellDates:true});
+  const bSheet=wb.Sheets['套組'],sSheet=wb.Sheets['銷售紀錄'];
+  if(!bSheet||!sSheet)throw new Error('找不到「套組」或「銷售紀錄」工作表');
+  const bs=XLSX.utils.sheet_to_json(bSheet,{header:1,defval:null});
+  const ss=XLSX.utils.sheet_to_json(sSheet,{header:1,defval:null});
+
+  const {data:dbBundles,error:be}=await sb.from('bundles').select('id,owner_id,bundle_date,code,product_name,cost,draw_target,historical_draws,total_draw_target,status,price,end_date').eq('owner_id',ownerId);
+  if(be)throw be;
+  const dbBundleMap=new Map((dbBundles||[]).map(x=>[String(x.code||'').trim(),x]));
+
+  const excelBundles=[];
+  for(const r of bs.slice(1)){
+   const code=r[1],name=r[2];
+   if(!code||code==='#NAME?'||!name||name==='#NAME?')continue;
+   const prog=parseDrawProgress(r[6]);
+   excelBundles.push({
+    owner_id:ownerId,code:String(code).trim(),product_name:String(name).trim(),
+    bundle_date:xDate(r[0]),cost:xNum(r[3]),
+    draw_target:r[6]==null||r[6]===''?null:String(r[6]),
+    excel_done:prog.done,total_draw_target:prog.total,
+    excel_status:['進行中','結束','免單結束','腰斬','直購'].includes(String(r[7]||''))?String(r[7]):null,
+    price:r[9]==null||r[9]===''?null:xNum(r[9]),end_date:xDate(r[10])
+   });
+  }
+
+  // 先建立名稱對照，解析銷售資料。
+  const nameMap=new Map((dbBundles||[]).map(x=>[x.code,x.product_name]));
+  for(const b of excelBundles)nameMap.set(b.code,b.product_name);
+  const excelSales=[];let lastSaleDate=null;
+  for(const r of ss.slice(1)){
+   const rowDate=xDate(r[0]); if(rowDate)lastSaleDate=rowDate;
+   const code=r[1]==null||r[1]===''||r[1]==='#NAME?'?null:String(r[1]).trim();
+   const drawsRaw=xNum(r[3]),unitRaw=xNum(r[4]),discountRaw=xNum(r[5]);
+   const payment=r[7]==null||String(r[7]).trim()===''?null:String(r[7]).trim();
+   const staff=r[8]==null||String(r[8]).trim()===''?null:String(r[8]).trim();
+   const note=r[9]==null||String(r[9]).trim()===''?null:String(r[9]).trim();
+   const meaningful=!!code||drawsRaw!=null||unitRaw!=null||discountRaw!=null||!!payment||!!staff||!!note;
+   if(!meaningful)continue;
+   const dt=rowDate||lastSaleDate;if(!dt)throw new Error('銷售紀錄有資料但找不到日期，請在該筆或其上方補上日期');
+   let name=(r[2]==null||r[2]===''||r[2]==='#NAME?'||String(r[2]).startsWith('='))?null:String(r[2]).trim();
+   if(!name&&code)name=nameMap.get(code)||null; name=name||'未指定品名';
+   const draws=Math.trunc(drawsRaw||0),unit=unitRaw||0,discount=discountRaw==null?0:-Math.abs(discountRaw);
+   const base=[ownerId,dt,code,name,draws,unit,discount,payment,staff,note];
+   excelSales.push({owner_id:ownerId,sale_date:dt,bundle_code:code,product_name:name,draws,unit_price:unit,discount,payment_method:payment,entered_by:staff,note,import_source_key:fingerprint(base)});
+  }
+
+  // Excel 的已刮 = 歷史基準 + Excel 本身已有的銷售抽數。
+  const excelSalesDraws=new Map();
+  for(const sr of excelSales)if(sr.bundle_code)excelSalesDraws.set(sr.bundle_code,(excelSalesDraws.get(sr.bundle_code)||0)+Number(sr.draws||0));
+
+  let bundleNew=0,bundleUpdated=0,bundleSkipped=0;
+  const bundleWrites=[];
+  for(const eb of excelBundles){
+   const old=dbBundleMap.get(eb.code);
+   const baseline=Math.max(0,Number(eb.excel_done||0)-Number(excelSalesDraws.get(eb.code)||0));
+   if(!old){
+    bundleWrites.push({owner_id:ownerId,code:eb.code,product_name:eb.product_name,bundle_date:eb.bundle_date,cost:eb.cost??0,draw_target:eb.draw_target,historical_draws:baseline,total_draw_target:eb.total_draw_target,status:eb.excel_status||'進行中',price:eb.price,end_date:eb.end_date});
+    bundleNew++;continue;
+   }
+   // Merge：保護網站上維護的狀態／結束日期；空白 Excel 不覆蓋；歷史刮數只能增加。
+   const merged={
+    owner_id:ownerId,code:old.code,
+    product_name:eb.product_name||old.product_name,
+    bundle_date:eb.bundle_date||old.bundle_date,
+    cost:eb.cost==null?old.cost:eb.cost,
+    draw_target:eb.draw_target==null?old.draw_target:eb.draw_target,
+    historical_draws:Math.max(Number(old.historical_draws||0),baseline),
+    total_draw_target:eb.total_draw_target==null?old.total_draw_target:eb.total_draw_target,
+    status:old.status,
+    price:eb.price==null?old.price:eb.price,
+    end_date:old.end_date
+   };
+   const changed=['product_name','bundle_date','cost','draw_target','historical_draws','total_draw_target','price'].some(k=>String(merged[k]??'')!==String(old[k]??''));
+   if(changed){bundleWrites.push(merged);bundleUpdated++;}else bundleSkipped++;
+  }
+  if(bundleWrites.length){
+   status.textContent=`套組差異：新增 ${bundleNew}、更新 ${bundleUpdated}、略過 ${bundleSkipped}。寫入中…`;
+   const q=await sb.from('bundles').upsert(bundleWrites,{onConflict:'owner_id,code'});if(q.error)throw q.error;
+  }
+
+  // 重新取套組 ID，供新增銷售關聯。
+  const {data:freshBundles,error:fbe}=await sb.from('bundles').select('id,code,product_name').eq('owner_id',ownerId);if(fbe)throw fbe;
+  const idMap=new Map((freshBundles||[]).map(x=>[x.code,x]));
+  for(const sr of excelSales)sr.bundle_id=sr.bundle_code&&idMap.has(sr.bundle_code)?idMap.get(sr.bundle_code).id:null;
+
+  const {data:dbSales,error:se}=await sb.from('sales').select('id,sale_date,bundle_code,product_name,draws,unit_price,discount,payment_method,entered_by,note,import_source_key').eq('owner_id',ownerId);
+  if(se)throw se;
+  const exactKeys=new Set((dbSales||[]).map(x=>x.import_source_key).filter(Boolean));
+  const candidateMap=new Map();
+  const stableKey=x=>[x.sale_date||'',x.bundle_code||'',x.entered_by||'',x.note||''].join('\u001f');
+  for(const x of dbSales||[]){const k=stableKey(x);if(!candidateMap.has(k))candidateMap.set(k,[]);candidateMap.get(k).push(x);}
+
+  let saleNew=0,saleUpdated=0,saleSkipped=0,saleConflicts=0;
+  const saleInserts=[],saleUpdates=[];
+  for(const sr of excelSales){
+   if(exactKeys.has(sr.import_source_key)){saleSkipped++;continue;}
+   const candidates=candidateMap.get(stableKey(sr))||[];
+   // 僅在候選唯一時，才視為同一筆舊銷售的修改；避免誤改同日多筆訂單。
+   if(candidates.length===1){
+    const old=candidates[0];
+    const differs=['product_name','draws','unit_price','discount','payment_method'].some(k=>String(old[k]??'')!==String(sr[k]??''));
+    if(differs){saleUpdates.push({...sr,id:old.id});saleUpdated++;}else saleSkipped++;
+   }else if(candidates.length>1){
+    saleConflicts++;
+   }else{saleInserts.push(sr);saleNew++;}
+  }
+
+  for(const u of saleUpdates){
+   const {id,...payload}=u;
+   const q=await sb.from('sales').update(payload).eq('id',id);if(q.error)throw q.error;
+  }
+  for(let i=0;i<saleInserts.length;i+=100){
+   const chunk=saleInserts.slice(i,i+100);const q=await sb.from('sales').insert(chunk);if(q.error)throw q.error;
+  }
+
+  const msg=`差異同步完成｜套組：新增 ${bundleNew}、更新 ${bundleUpdated}、略過 ${bundleSkipped}｜銷售：新增 ${saleNew}、更新 ${saleUpdated}、略過 ${saleSkipped}、衝突 ${saleConflicts}`;
+  status.textContent=msg+(saleConflicts?'。衝突資料未自動寫入，避免誤覆蓋。':'');
+  toast(msg);
+  setTimeout(async()=>{closeModal();await loadAll()},900);
+ }catch(err){status.textContent='同步失敗：'+(err.message||err);toast(err.message||'Excel 差異同步失敗')}
+}
 
 function closeModal(){document.getElementById('modal').style.display='none';document.getElementById('modal').innerHTML=''}
 function renderMonthlyReports(){
