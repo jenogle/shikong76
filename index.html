@@ -121,6 +121,16 @@ function derivedBundle(b,stats){const st=stats.get(b.id)||{revenue:0,draws:0,sal
 function parseDrawProgress(v){const t=String(v??'').trim();if(!t)return {done:0,total:null};if(t.includes('/')){const [a,b]=t.split('/',2);const da=Number((a.match(/\d+/)||['0'])[0]);const tb=(b.match(/\d+/)||[])[0];return {done:Number.isFinite(da)?da:0,total:tb?Number(tb):null};}const m=t.match(/\d+/);return {done:0,total:m?Number(m[0]):null};}
 function totalDrawTarget(b){const n=Number(b.total_draw_target);if(Number.isFinite(n)&&n>0)return n;const m=String(b.draw_target||'').match(/\d+/);return m?Number(m[0]):null}
 function drawProgress(b){const total=totalDrawTarget(b);return `${Number(b._draws||0)}/${total??'-'}`}
+function saleBalanceDue(x){
+ const revenue=Number(x?.revenue||0);
+ const received=Number(x?.amount_received||0);
+ const change=Math.max(Number(x?.change_due||0),0);
+ return Math.max(revenue-received+change,0);
+}
+function balanceDueHtml(x){
+ const due=saleBalanceDue(x);
+ return due!==0?`<b style="color:#dc2626">${money(due)}</b>`:`${money(0)}`;
+}
 function renderOverview(){const {b,s}=ownerFiltered();document.getElementById('pageTitle').textContent=selectedOwner==='ALL'?'全部老闆':ownerName(selectedOwner);document.getElementById('pageSubtitle').textContent='雲端資料庫｜毛利由實際銷售紀錄計算';const calc=salesStatsForBundles(b,s),db=b.map(x=>derivedBundle(x,calc.stats));const revenue=s.reduce((a,x)=>a+Number(x.revenue||0),0);const cost=b.reduce((a,x)=>a+Number(x.cost||0),0);const profit=db.reduce((a,x)=>a+x._profit,0)+calc.unlinkedRevenue;const draws=s.reduce((a,x)=>a+Number(x.draws||0),0);const active=b.filter(x=>x.status==='進行中').length;const unfinished=db.filter(x=>['進行中','直購'].includes(x.status));const unfinishedRevenue=unfinished.reduce((a,x)=>a+Number(x._revenue||0),0);const unfinishedTop=unfinished.filter(x=>Number(x._revenue||0)>0).sort((a,z)=>Number(z._revenue||0)-Number(a._revenue||0)).slice(0,8);const expOwners=(selectedOwner==='ALL'?owners:owners.filter(o=>o.id===selectedOwner)).filter(o=>o.draw_expiry_date).sort((a,b)=>String(a.draw_expiry_date).localeCompare(String(b.draw_expiry_date)));
 const months={};for(const x of s){const m=(x.sale_date||'').slice(0,7)||'未知';months[m]=(months[m]||0)+Number(x.revenue||0)}const mkeys=Object.keys(months).sort().slice(-6);const max=Math.max(...mkeys.map(k=>months[k]),1);
 
