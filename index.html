@@ -26,15 +26,74 @@ const money=n=>new Intl.NumberFormat('zh-TW',{style:'currency',currency:'TWD',ma
 const esc=s=>String(s??'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
 function configured(){return CONFIG.SUPABASE_URL.startsWith('http')&&!CONFIG.SUPABASE_URL.includes('YOUR_')&&CONFIG.SUPABASE_PUBLISHABLE_KEY&&!CONFIG.SUPABASE_PUBLISHABLE_KEY.includes('YOUR_')}
 function toast(msg){const x=document.getElementById('toast');x.textContent=msg;x.style.display='block';setTimeout(()=>x.style.display='none',2600)}
+function isJwtError(err){const m=String(err?.message||err||'').toLowerCase();return m.includes('jwt')||m.includes('token')&&(['expired','invalid','issued','signature','not yet valid'].some(x=>m.includes(x)))}
+let refreshingSession=null;
+async function refreshAuthSession(){
+ if(refreshingSession)return refreshingSession;
+ refreshingSession=(async()=>{
+   try{
+     const {data,error}=await sb.auth.refreshSession();
+     if(error)throw error;
+     session=data.session||null;
+     return !!session;
+   }catch(err){
+     if(isEngineer())toast('JWT 更新失敗：'+(err?.message||err));
+     return false;
+   }finally{refreshingSession=null}
+ })();
+ return refreshingSession;
+}
+async function authRetry(fn,{quiet=false}={}){
+ let result=await fn();
+ if(result?.error&&isJwtError(result.error)){
+   if(!quiet)toast(isEngineer()?'JWT 已失效，正在重新取得登入憑證…':'登入狀態更新中，正在重新連線…');
+   const ok=await refreshAuthSession();
+   if(ok)result=await fn();
+   else{
+     session=null;
+     if(!quiet)toast('登入狀態已過期，請重新登入');
+     setTimeout(()=>showLogin(),500);
+   }
+ }
+ return result;
+}
+
 function shell(){const roleLabel=isEngineer()?'最高權限｜工程師':'營運管理權限';const managementMode=currentView==='owners';const topActions=managementMode?`<button class="btn" onclick="loadAll()">↻ 重新整理</button>`:`<button class="btn" onclick="loadAll()">↻ 重新整理</button><button class="btn" onclick="openImportForm()">⇧ Excel 匯入</button><button class="btn" onclick="openBundleForm()">＋ 新增套組</button><button class="btn primary" onclick="openSaleForm()">＋ 新增銷售</button>`;document.getElementById('root').innerHTML=`<div class="app"><aside class="side"><div class="brand">失控寄抽管理系統</div><div class="owner-title">營運對象</div><div id="owners" class="owner-tabs"></div><div class="owner-title">營運功能</div><div class="owner-tabs"><button class="nav-btn ${currentView==='overview'?'active':''}" onclick="setView('overview')">📊 營運總覽</button><button class="nav-btn ${currentView==='bundles'?'active':''}" onclick="setView('bundles')">📦 套組管理</button><button class="nav-btn ${currentView==='sales'?'active':''}" onclick="setView('sales')">📈 銷售分析</button><button class="nav-btn ${currentView==='reports'?'active':''}" onclick="setView('reports')">🧾 月結報表</button></div><div class="owner-title" style="margin-top:10px;padding-top:16px;border-top:1px solid rgba(255,255,255,.1)">總管理區</div><div class="owner-tabs"><button class="nav-btn ${currentView==='owners'?'active':''}" onclick="setView('owners')">👥 老闆管理</button></div><div style="margin-top:18px;padding:10px;color:#9ca3af;font-size:12px"><b style="color:white">${esc(username())}</b><br>${roleLabel}<br><button class="btn" style="margin-top:8px;width:100%" onclick="logout()">登出</button></div></aside><main class="main"><div class="top"><div class="title"><h1 id="pageTitle">全部老闆</h1><div id="pageSubtitle" class="subtitle">雲端資料庫｜套組、銷售、營收即時同步</div></div><div class="actions">${topActions}</div></div><div id="content"></div></main></div>`;renderOwners();renderContent();}
 function setView(view){currentView=view;shell()}
 function clearCharts(){for(const c of chartInstances){try{c.destroy()}catch(e){}}chartInstances=[]}
 async function init(){if(!configured()){document.getElementById('root').innerHTML=`<div class="login"><div class="login-card"><h1 style="margin-top:0">失控寄抽管理系統</h1><p class="muted">這個版本已完成 Supabase 對接。現在還缺你的 Supabase URL 與 Publishable Key；請編輯本檔最上方 CONFIG，或依附檔 README 完成設定。</p><p style="font-size:13px">資料表、RLS 權限與 Excel 匯入 SQL 都已準備好。</p><button class="btn primary" onclick="location.reload()">設定完成後重新載入</button></div></div>`;return}
-sb=window.supabase.createClient(CONFIG.SUPABASE_URL,CONFIG.SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}}); const r=await sb.auth.getSession();session=r.data.session;if(!session){showLogin();return} await loadAll();}
+sb=window.supabase.createClient(CONFIG.SUPABASE_URL,CONFIG.SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}}); sb.auth.onAuthStateChange((event,newSession)=>{session=newSession||null;if(event==='SIGNED_OUT'&&!session)showLogin()}); const r=await sb.auth.getSession();session=r.data.session;if(!session){showLogin();return} await loadAll();}
 function showLogin(){document.getElementById('root').innerHTML=`<div class="login"><form class="login-card" onsubmit="login(event)"><h1 style="margin-top:0">失控寄抽管理系統</h1><p class="muted">請使用系統帳號與密碼登入。</p><div class="field" style="margin-bottom:10px"><label>帳號</label><input id="luser" autocomplete="username" placeholder="輸入帳號" required></div><div class="field"><label>密碼</label><input id="lpass" type="password" autocomplete="current-password" placeholder="輸入密碼" required></div><div class="modal-actions"><button class="btn primary">登入</button></div></form></div>`}
 async function login(e){e.preventDefault();const u=luser.value.trim().toLowerCase();const email=LOGIN_EMAILS[u];if(!email)return toast('帳號或密碼錯誤');const {data,error}=await sb.auth.signInWithPassword({email,password:lpass.value});if(error)return toast('帳號或密碼錯誤');session=data.session;if(!['boss','jen'].includes(appRole())){await sb.auth.signOut();session=null;return toast('此帳號沒有系統權限')}await loadAll()}
 async function logout(){await sb.auth.signOut();session=null;showLogin()}
-async function loadAll(){const [o,b,s,r,c]=await Promise.all([sb.from('owners').select('*').order('display_order').order('name'),sb.from('bundles').select('*').order('bundle_date',{ascending:false}),sb.from('sales').select('*').order('sale_date',{ascending:false}),sb.from('monthly_reports').select('*').order('report_month',{ascending:false}),sb.from('monthly_owner_settlements').select('*').order('settled_at',{ascending:false})]);for(const x of [o,b,s,r,c])if(x.error)return toast(x.error.message);owners=(o.data||[]).sort((a,b)=>compareCodes(a.owner_code||'ZZZ',b.owner_code||'ZZZ'));bundles=(b.data||[]).sort((a,b)=>{const dc=String(b.bundle_date||'').localeCompare(String(a.bundle_date||''));return dc||compareBundleCodesDesc(a.code,b.code)});sales=s.data||[];monthlyReports=r.data||[];ownerSettlements=c.data||[];shell()}
+async function loadAll(){
+ const content=document.getElementById('content');
+ if(content&&!content.innerHTML.trim())content.innerHTML='<div class="section"><div class="empty">正在載入營運資料…</div></div>';
+ const fetchAll=()=>Promise.all([
+   authRetry(()=>sb.from('owners').select('*').order('display_order').order('name'),{quiet:true}),
+   authRetry(()=>sb.from('bundles').select('*').order('bundle_date',{ascending:false}),{quiet:true}),
+   authRetry(()=>sb.from('sales').select('*').order('sale_date',{ascending:false}),{quiet:true}),
+   authRetry(()=>sb.from('monthly_reports').select('*').order('report_month',{ascending:false}),{quiet:true}),
+   authRetry(()=>sb.from('monthly_owner_settlements').select('*').order('settled_at',{ascending:false}),{quiet:true})
+ ]);
+ let [o,b,s,r,c]=await fetchAll();
+ let failed=[o,b,s,r,c].find(x=>x?.error);
+ if(failed&&isJwtError(failed.error)){
+   toast(isEngineer()?'JWT 驗證失效，正在重新連線…':'登入狀態更新中，正在重新連線…');
+   const ok=await refreshAuthSession();
+   if(ok){[o,b,s,r,c]=await fetchAll();failed=[o,b,s,r,c].find(x=>x?.error)}
+ }
+ if(failed){
+   const msg=isEngineer()?failed.error.message:(isJwtError(failed.error)?'登入狀態已過期，請重新登入':'資料暫時無法載入，請稍後再試');
+   toast(msg);
+   if(isJwtError(failed.error)){session=null;setTimeout(()=>showLogin(),500)}
+   else if(content)content.innerHTML='<div class="section"><div class="empty">資料載入失敗 <button class="btn" onclick="loadAll()">重新連線</button></div></div>';
+   return;
+ }
+ owners=(o.data||[]).sort((a,b)=>compareCodes(a.owner_code||'ZZZ',b.owner_code||'ZZZ'));
+ bundles=(b.data||[]).sort((a,b)=>{const dc=String(b.bundle_date||'').localeCompare(String(a.bundle_date||''));return dc||compareBundleCodesDesc(a.code,b.code)});
+ sales=s.data||[];monthlyReports=r.data||[];ownerSettlements=c.data||[];shell()
+}
 function ownerName(id){return owners.find(o=>o.id===id)?.name||'未知老闆'}
 function compareCodes(a,b){return String(a||'').localeCompare(String(b||''),'en',{numeric:true,sensitivity:'base'});}
 function compareBundleCodesDesc(a,b){return String(b||'').localeCompare(String(a||''),'en',{numeric:true,sensitivity:'base'});}
@@ -153,7 +212,7 @@ function normalizeDiscountInput(){const el=document.getElementById('sf_discount'
 function orderTotal(){return Math.max(0,Number(document.getElementById('sf_draws')?.value||0)*Number(document.getElementById('sf_price')?.value||0)-Math.abs(Number(document.getElementById('sf_discount')?.value||0)))}
 function paymentRows(){return [...document.querySelectorAll('.payment-row')].map(r=>({method:r.querySelector('.pay-method').value,amount:Number(r.querySelector('.pay-amount').value||0)})).filter(x=>['免單結束','待定'].includes(x.method)||x.amount>0)}
 function updateCheckoutSummary(){const payments=paymentRows();const special=payments.some(x=>['免單結束','待定'].includes(x.method));const isFree=payments.some(x=>x.method==='免單結束');const total=isFree?0:orderTotal();const received=special?0:payments.reduce((a,x)=>a+x.amount,0);const change=special?0:received-total;const a=document.getElementById('sum_total'),b=document.getElementById('sum_received'),c=document.getElementById('sum_change');if(a)a.textContent=money(total);if(b)b.textContent=money(received);if(c)c.textContent=money(Math.max(change,0))}
-async function saveSale(e){e.preventDefault();const owner=document.getElementById('sf_owner'),bundle=document.getElementById('sf_bundle'),date=document.getElementById('sf_date'),draws=document.getElementById('sf_draws'),price=document.getElementById('sf_price'),discount=document.getElementById('sf_discount'),staff=document.getElementById('sf_staff'),note=document.getElementById('sf_note');if(!owner||!bundle||!date||!draws||!price)return toast('銷售表單載入異常，請重新整理後再試');const bid=bundle.value;if(!bid)return toast('請選擇套組');if(!date.value)return toast('請選擇日期');if(Number(draws.value||0)<=0)return toast('抽數需大於 0');if(Number(price.value||0)<0)return toast('一抽價格不可為負數');const payments=paymentRows();if(!payments.length)return toast('請至少選擇一種結帳方式');const isFree=payments.some(x=>x.method==='免單結束'),isPending=payments.some(x=>x.method==='待定');if((isFree||isPending)&&payments.length!==1)return toast((isFree?'免單結束':'待定')+'不可與其他付款方式同時使用');const total=isFree?0:orderTotal(),received=(isFree||isPending)?0:payments.reduce((a,x)=>a+x.amount,0);if(!isFree&&!isPending&&received<total)return toast(`實收不足，尚差 ${money(total-received)}`);const params={p_owner_id:owner.value,p_bundle_id:bid,p_sale_date:date.value,p_draws:Number(draws.value||0),p_unit_price:Number(price.value||0),p_discount:isFree?0:-Math.abs(Number(discount?.value||0)),p_entered_by:staff?.value.trim()||null,p_note:note?.value.trim()||null,p_payments:payments};let error;if(editingId){({error}=await sb.rpc('update_sale_with_payments',{p_sale_id:editingId,...params}))}else{({error}=await sb.rpc('create_sale_with_payments_v2',{...params,p_close_bundle:!!document.getElementById('sf_close_bundle')?.checked}))}if(error)return toast((editingId?'更新':'新增')+'失敗：'+error.message);toast(editingId?'銷售紀錄已更新':(isPending?'銷售已建立，付款狀態待定':isFree?'免單結束已建立':`銷售紀錄已新增，找零 ${money(received-total)}`));closeModal();editingId=null;await loadAll()}
+async function saveSale(e){e.preventDefault();const owner=document.getElementById('sf_owner'),bundle=document.getElementById('sf_bundle'),date=document.getElementById('sf_date'),draws=document.getElementById('sf_draws'),price=document.getElementById('sf_price'),discount=document.getElementById('sf_discount'),staff=document.getElementById('sf_staff'),note=document.getElementById('sf_note');if(!owner||!bundle||!date||!draws||!price)return toast('銷售表單載入異常，請重新整理後再試');const bid=bundle.value;if(!bid)return toast('請選擇套組');if(!date.value)return toast('請選擇日期');if(Number(draws.value||0)<=0)return toast('抽數需大於 0');if(Number(price.value||0)<0)return toast('一抽價格不可為負數');const payments=paymentRows();if(!payments.length)return toast('請至少選擇一種結帳方式');const isFree=payments.some(x=>x.method==='免單結束'),isPending=payments.some(x=>x.method==='待定');if((isFree||isPending)&&payments.length!==1)return toast((isFree?'免單結束':'待定')+'不可與其他付款方式同時使用');const total=isFree?0:orderTotal(),received=(isFree||isPending)?0:payments.reduce((a,x)=>a+x.amount,0);if(!isFree&&!isPending&&received<total)return toast(`實收不足，尚差 ${money(total-received)}`);const params={p_owner_id:owner.value,p_bundle_id:bid,p_sale_date:date.value,p_draws:Number(draws.value||0),p_unit_price:Number(price.value||0),p_discount:isFree?0:-Math.abs(Number(discount?.value||0)),p_entered_by:staff?.value.trim()||null,p_note:note?.value.trim()||null,p_payments:payments};let error;if(editingId){({error}=await authRetry(()=>sb.rpc('update_sale_with_payments',{p_sale_id:editingId,...params})))}else{({error}=await authRetry(()=>sb.rpc('create_sale_with_payments_v2',{...params,p_close_bundle:!!document.getElementById('sf_close_bundle')?.checked})))}if(error)return toast((editingId?'更新':'新增')+'失敗：'+error.message);toast(editingId?'銷售紀錄已更新':(isPending?'銷售已建立，付款狀態待定':isFree?'免單結束已建立':`銷售紀錄已新增，找零 ${money(received-total)}`));closeModal();editingId=null;await loadAll()}
 
 function openImportForm(){
  document.getElementById('modal').innerHTML=`<div class="modal"><div class="section-head"><h3>Excel 差異同步</h3><button class="btn" onclick="closeModal()">關閉</button></div>${engineerNote(`<p class="muted">Excel 不再整批覆蓋資料庫。系統會先比對既有資料，只新增缺少項目、更新安全差異，資料庫中 Excel 沒出現的資料一律保留。</p>`)}<div class="form-grid"><div class="field"><label>資料所屬老闆</label><select id="imp_owner" required>${ownerOptions(selectedOwner==='ALL'?(owners[0]?.id||''):selectedOwner)}</select></div><div class="field"><label>Excel 檔案</label><input id="imp_file" type="file" accept=".xlsx,.xls" required></div>${engineerNote(`<div class="field full"><label>差異同步規則</label><div class="muted" style="line-height:1.75">① 新套組：新增。既有套組：只更新 Excel 有值且確實不同的基本欄位。<br>② 狀態、結束日期：既有套組以網站資料庫為主，不被舊 Excel 覆蓋。<br>③ 歷史已刮數：只允許往前增加，不會被舊 Excel 往回蓋。<br>④ Excel 空白欄位不覆蓋資料庫已有內容；Excel 沒出現的資料也不刪除。<br>⑤ 銷售完全相同會略過；可明確辨識為同一筆的修改會更新；無法安全判斷的相似資料列為衝突，不自動亂改。<br>⑥ 匯入完成會顯示新增／更新／略過／衝突統計。</div></div>`)}</div><div class="modal-actions"><button class="btn" type="button" onclick="closeModal()">取消</button><button class="btn primary" onclick="importExcel()">開始差異同步</button></div><div id="imp_status" class="muted" style="margin-top:12px;line-height:1.6"></div></div>`;
