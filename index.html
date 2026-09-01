@@ -112,6 +112,7 @@ function renderOwners(){const box=document.getElementById('owners');const manage
 function selectOwner(id){selectedOwner=id;if(currentView==='owners')currentView='overview';shell()}
 function ownerFiltered(){const b=selectedOwner==='ALL'?bundles:bundles.filter(x=>x.owner_id===selectedOwner);const s=(selectedOwner==='ALL'?sales:sales.filter(x=>x.owner_id===selectedOwner)).slice().sort(sortSalesByEnteredTime);return {b,s}}
 function currentSaleProductName(sale){const b=bundles.find(b=>b.id===sale.bundle_id);return b?.product_name||sale.product_name||''}
+function currentSaleBundleCode(sale){const b=bundles.find(b=>b.id===sale.bundle_id);return b?.code||sale.bundle_code||''}
 function renderContent(){clearCharts();if(currentView==='bundles')return renderBundles();if(currentView==='sales')return renderSalesAnalytics();if(currentView==='reports')return renderMonthlyReports();if(currentView==='owners')return renderOwnerManager();return renderOverview()}
 function salesStatsForBundles(b,s){
  const stats=new Map();
@@ -186,7 +187,7 @@ function renderSalesAnalytics(){
  document.getElementById('pageTitle').textContent=(selectedOwner==='ALL'?'全部老闆':ownerName(selectedOwner))+'｜銷售分析';
  document.getElementById('pageSubtitle').textContent='銷售紀錄管理｜以銷售日期為主要排序，同日依建立時間由新到舊';
  const revenue=s.reduce((a,x)=>a+Number(x.revenue||0),0),cost=db.reduce((a,x)=>a+x._recognizedCost,0),profit=db.reduce((a,x)=>a+x._profit,0)+calc.unlinkedRevenue,draws=s.reduce((a,x)=>a+Number(x.draws||0),0);
- document.getElementById('content').innerHTML=`<div class="grid"><div class="kpi"><div class="label">總銷售額</div><div class="value">${money(revenue)}</div></div><div class="kpi"><div class="label">已銷售套組成本</div><div class="value">${money(cost)}</div></div><div class="kpi"><div class="label">銷售毛利</div><div class="value">${money(profit)}</div></div><div class="kpi"><div class="label">已售抽數</div><div class="value">${draws}</div></div></div><div class="section"><div class="section-head"><h2>銷售紀錄</h2><button class="btn primary" onclick="openSaleForm()">＋ 新增銷售</button></div><div class="table-wrap"><table class="table"><thead><tr><th>日期</th><th>老闆</th><th>編號</th><th>品名</th><th>抽數</th><th>單價</th><th>折價</th><th>銷售額</th><th>結帳方式</th><th>尚餘</th><th>填表人</th><th>備註</th><th>操作</th></tr></thead><tbody>${s.map(x=>`<tr><td>${x.sale_date||''}</td><td>${esc(ownerName(x.owner_id))}</td><td>${esc(x.bundle_code||'')}</td><td>${esc(currentSaleProductName(x))}</td><td>${x.draws||0}</td><td>${money(x.unit_price)}</td><td><span class="discount-value">−${money(Math.abs(Number(x.discount||0)))}</span></td><td><b>${money(x.revenue)}</b></td><td>${esc(x.payment_method||'')}</td><td>${balanceDueHtml(x)}</td><td>${esc(x.entered_by||'')}</td><td>${esc(x.note||'')}</td><td><button class="btn" onclick="openSaleEdit('${x.id}')">編輯</button></td></tr>`).join('')}</tbody></table></div>${s.length?'':'<div class="empty">目前沒有銷售紀錄；成本與毛利皆顯示 0。</div>'}</div>`
+ document.getElementById('content').innerHTML=`<div class="grid"><div class="kpi"><div class="label">總銷售額</div><div class="value">${money(revenue)}</div></div><div class="kpi"><div class="label">已銷售套組成本</div><div class="value">${money(cost)}</div></div><div class="kpi"><div class="label">銷售毛利</div><div class="value">${money(profit)}</div></div><div class="kpi"><div class="label">已售抽數</div><div class="value">${draws}</div></div></div><div class="section"><div class="section-head"><h2>銷售紀錄</h2><button class="btn primary" onclick="openSaleForm()">＋ 新增銷售</button></div><div class="table-wrap"><table class="table"><thead><tr><th>日期</th><th>老闆</th><th>編號</th><th>品名</th><th>抽數</th><th>單價</th><th>折價</th><th>銷售額</th><th>結帳方式</th><th>尚餘</th><th>填表人</th><th>備註</th><th>操作</th></tr></thead><tbody>${s.map(x=>`<tr><td>${x.sale_date||''}</td><td>${esc(ownerName(x.owner_id))}</td><td>${esc(currentSaleBundleCode(x))}</td><td>${esc(currentSaleProductName(x))}</td><td>${x.draws||0}</td><td>${money(x.unit_price)}</td><td><span class="discount-value">−${money(Math.abs(Number(x.discount||0)))}</span></td><td><b>${money(x.revenue)}</b></td><td>${esc(x.payment_method||'')}</td><td>${balanceDueHtml(x)}</td><td>${esc(x.entered_by||'')}</td><td>${esc(x.note||'')}</td><td><button class="btn" onclick="openSaleEdit('${x.id}')">編輯</button></td></tr>`).join('')}</tbody></table></div>${s.length?'':'<div class="empty">目前沒有銷售紀錄；成本與毛利皆顯示 0。</div>'}</div>`
 }
 
 function statusPill(v){const c=(v==='結束'||v==='免單結束')?'ok':(v==='進行中'||v==='直購')?'warn':'bad';return `<span class="pill ${c}">${esc(v||'')}</span>`}
@@ -279,7 +280,7 @@ async function deleteSaleFromEdit(){
  if(!editingId)return toast('找不到要刪除的銷售紀錄');
  if(!isEngineer())return toast('只有 jen 可以刪除銷售紀錄');
  const sale=sales.find(x=>x.id===editingId);
- const label=sale?`${sale.sale_date||''}｜${sale.bundle_code||''}｜${currentSaleProductName(sale)}`:'此筆銷售';
+ const label=sale?`${sale.sale_date||''}｜${currentSaleBundleCode(sale)}｜${currentSaleProductName(sale)}`:'此筆銷售';
  if(!confirm(`確定要刪除這筆銷售嗎？\n\n${label}\n\n刪除後會重新計算套組營收、抽數、毛利與月結資料。`))return;
  const id=editingId;
  const {error}=await authRetry(()=>sb.rpc('delete_sale_record',{p_sale_id:id}));
