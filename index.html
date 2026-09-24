@@ -200,8 +200,10 @@ function renderSalesAnalytics(){
 
 function statusPill(v){const c=(v==='結束'||v==='免單結束')?'ok':(v==='進行中'||v==='直購')?'warn':'bad';return `<span class="pill ${c}">${esc(v||'')}</span>`}
 function ownerOptions(sel,includeAll=false,operationalOnly=false){const list=operationalOnly?owners.filter(ownerOperational):owners;return (includeAll?`<option value="ALL">全部老闆</option>`:'')+list.map(o=>`<option value="${o.id}" ${o.id===sel?'selected':''}>${esc(o.name)}${ownerOperational(o)?'':'（已停用）'}</option>`).join('')}
+function bundleErrorZh(error){const msg=String(error?.message||'');if(/duplicate key|unique constraint|bundles_owner_code_uidx|already exists/i.test(msg))return '此套組編號已存在，請重新建立';if(/owner.*inactive|已停用|已到期/i.test(msg))return '此老闆已停用或寄抽已到期，無法新增套組';return msg||'套組操作失敗，請稍後再試'}
 function ownerCodeById(id){return owners.find(o=>o.id===id)?.owner_code||''}
-function updateBundlePrefix(){const p=document.getElementById('bf_prefix');if(p)p.textContent=ownerCodeById(document.getElementById('bf_owner')?.value)||'—'}
+function nextBundleCodePreview(ownerId,date){const prefix=ownerCodeById(ownerId).toUpperCase(),d=String(date||'').replace(/-/g,'');if(!prefix||d.length<8)return '系統自動產生';const base=prefix+d.slice(4,8);let max=0;bundles.filter(b=>b.owner_id===ownerId&&String(b.code||'').startsWith(base)).forEach(b=>{const m=String(b.code||'').slice(base.length).match(/^\d{2}$/);if(m)max=Math.max(max,Number(m[0]))});return base+String(max+1).padStart(2,'0')}
+function updateBundlePrefix(){const p=document.getElementById('bf_code_preview');if(p)p.textContent=nextBundleCodePreview(document.getElementById('bf_owner')?.value,document.getElementById('bf_date')?.value)}
 
 function openBundleLedger(id){
  const b=bundles.find(x=>x.id===id);
@@ -255,30 +257,28 @@ function openBundleForm(id){
  if(!id){const preferred=selectedOwner==='ALL'?owners.find(ownerOperational):owners.find(o=>o.id===selectedOwner);if(!preferred||!ownerOperational(preferred))return toast('目前選擇的老闆已停用或寄抽已到期，無法新增套組');}
  const x=id?bundles.find(b=>b.id===id):null;
  const defaultOwner=x?.owner_id||(selectedOwner==='ALL'?(owners.find(ownerOperational)?.id||''):selectedOwner);
- const prefix=ownerCodeById(defaultOwner);
- let numericPart='';
- if(x?.code){numericPart=String(x.code);if(prefix&&numericPart.toUpperCase().startsWith(prefix.toUpperCase()))numericPart=numericPart.slice(prefix.length)}
- const createFields=!x?`<div class="field"><label>套組編號</label><div class="code-entry"><span class="code-prefix" id="bf_prefix">${esc(prefix||'—')}</span><input id="bf_code_suffix" value="${esc(numericPart)}" inputmode="numeric" placeholder="例如 0019" required></div></div>`:`<div class="field"><label>套組編號</label><input id="bf_code_full" value="${esc(x.code||'')}" required></div>`;
+ const createFields=!x?`<div class="field"><label>套組編號</label><div id="bf_code_preview" style="padding:11px 12px;border:1px solid #d6e0ea;border-radius:11px;background:#f7faff;font-weight:900">${esc(nextBundleCodePreview(defaultOwner,localYMD()))}</div><div class="muted" style="font-size:12px;margin-top:5px">系統會依「老闆代碼＋月日＋當日兩位流水號」自動產生，建立時再次檢查避免重複。</div></div>`:`<div class="field"><label>套組編號</label><input id="bf_code_full" value="${esc(x.code||'')}" required></div>`;
  const editOnly=x?`<div class="field"><label>狀態</label><select id="bf_status"><option ${x.status==='進行中'?'selected':''}>進行中</option><option ${x.status==='結束'?'selected':''}>結束</option><option ${x.status==='免單結束'?'selected':''}>免單結束</option><option ${x.status==='腰斬'?'selected':''}>腰斬</option><option ${x.status==='直購'?'selected':''}>直購</option></select></div><div class="field"><label>結束日期</label><input id="bf_end" type="date" value="${['結束','腰斬','免單結束','直購'].includes(x.status)?(x.end_date||localYMD()):''}"></div>`:'';
- document.getElementById('modal').innerHTML=`<div class="modal"><div class="section-head"><div><h3>${x?'編輯套組':'新增套組'}</h3>${engineerNote(`<div class="muted" style="font-size:12px">${x?'狀態與結束日期請在這裡更新':'新套組會自動設為「進行中」'}</div>`)}</div><button class="btn" onclick="closeModal()">關閉</button></div><form onsubmit="saveBundle(event)"><div class="form-grid"><div class="field"><label>老闆</label><select id="bf_owner" onchange="updateBundlePrefix()" required>${ownerOptions(defaultOwner,false,!x)}</select></div><div class="field"><label>日期</label><input id="bf_date" type="date" value="${x?.bundle_date||localYMD()}" required></div>${createFields}<div class="field"><label>品名</label><input id="bf_name" value="${esc(x?.product_name||'')}" required></div><div class="field"><label>成本</label><input id="bf_cost" type="number" min="0" step="1" value="${x?.cost||0}"></div><div class="field"><label>一抽價格</label><input id="bf_price" inputmode="numeric" value="${esc(x?.price||'')}"></div><div class="field"><label>歷史已刮數</label><input id="bf_historical" type="number" min="0" step="1" value="${Number(x?.historical_draws||0)}" placeholder="舊資料可手動填寫"></div><div class="field"><label>總刮數</label><input id="bf_target" type="number" min="0" step="1" value="${totalDrawTarget(x||{})??''}" placeholder="例如 50"></div>${editOnly}</div><div class="modal-actions"><button class="btn" type="button" onclick="closeModal()">取消</button><button class="btn primary">${x?'更新套組':'建立套組'}</button></div></form></div>`;
+ document.getElementById('modal').innerHTML=`<div class="modal"><div class="section-head"><div><h3>${x?'編輯套組':'新增套組'}</h3>${engineerNote(`<div class="muted" style="font-size:12px">${x?'狀態與結束日期請在這裡更新':'新套組會自動設為「進行中」'}</div>`)}</div><button class="btn" onclick="closeModal()">關閉</button></div><form onsubmit="saveBundle(event)"><div class="form-grid"><div class="field"><label>老闆</label><select id="bf_owner" onchange="updateBundlePrefix()" required>${ownerOptions(defaultOwner,false,!x)}</select></div><div class="field"><label>日期</label><input id="bf_date" type="date" value="${x?.bundle_date||localYMD()}" onchange="updateBundlePrefix()" required></div>${createFields}<div class="field"><label>品名</label><input id="bf_name" value="${esc(x?.product_name||'')}" required></div><div class="field"><label>成本</label><input id="bf_cost" type="number" min="0" step="1" value="${x?.cost||0}"></div><div class="field"><label>一抽價格</label><input id="bf_price" inputmode="numeric" value="${esc(x?.price||'')}"></div><div class="field"><label>歷史已刮數</label><input id="bf_historical" type="number" min="0" step="1" value="${Number(x?.historical_draws||0)}" placeholder="舊資料可手動填寫"></div><div class="field"><label>總刮數</label><input id="bf_target" type="number" min="0" step="1" value="${totalDrawTarget(x||{})??''}" placeholder="例如 50"></div>${editOnly}</div><div class="modal-actions"><button class="btn" type="button" onclick="closeModal()">取消</button><button class="btn primary">${x?'更新套組':'建立套組'}</button></div></form></div>`;
  document.getElementById('modal').style.display='flex';
 }
 async function saveBundle(e){
  e.preventDefault();
  if(!editingId&&!ownerOperationalById(bf_owner.value))return toast('此老闆已停用或寄抽已到期，無法新增套組');
  const target=bf_target.value===''?null:Number(bf_target.value);
- let code;
- if(editingId){code=bf_code_full.value.trim().toUpperCase()}else{
-   const prefix=ownerCodeById(bf_owner.value).toUpperCase();
-   let suffix=bf_code_suffix.value.trim().toUpperCase();
-   if(prefix&&suffix.startsWith(prefix))suffix=suffix.slice(prefix.length);
-   suffix=suffix.replace(/\s+/g,'');
-   if(!suffix)return toast('請輸入套組編號數字部分');
-   code=prefix+suffix;
+ if(editingId){
+   const code=bf_code_full.value.trim().toUpperCase();
+   const payload={owner_id:bf_owner.value,bundle_date:bf_date.value,code,product_name:bf_name.value.trim(),cost:Number(bf_cost.value||0),historical_draws:Number(document.getElementById('bf_historical')?.value||0),total_draw_target:target,draw_target:target==null?null:`/${target}`,price:bf_price.value.trim()||null,status:bf_status.value,end_date:['結束','腰斬','免單結束','直購'].includes(bf_status.value)?(bf_end.value||localYMD()):null};
+   const q=await sb.from('bundles').update(payload).eq('id',editingId);
+   if(q.error)return toast(bundleErrorZh(q.error));
+   toast('套組已更新');
+ }else{
+   const {data,error}=await authRetry(()=>sb.rpc('create_bundle_auto_code',{p_owner_id:bf_owner.value,p_bundle_date:bf_date.value,p_product_name:bf_name.value.trim(),p_cost:Number(bf_cost.value||0),p_historical_draws:Number(document.getElementById('bf_historical')?.value||0),p_total_draw_target:target,p_price:bf_price.value.trim()||null}));
+   if(error)return toast(bundleErrorZh(error));
+   const code=data?.code||data?.[0]?.code||'';
+   toast(code?`套組已建立：${code}`:'套組已建立');
  }
- const payload={owner_id:bf_owner.value,bundle_date:bf_date.value,code,product_name:bf_name.value.trim(),cost:Number(bf_cost.value||0),historical_draws:Number(document.getElementById('bf_historical')?.value||0),total_draw_target:target,draw_target:target==null?null:`/${target}`,price:bf_price.value.trim()||null};
- if(editingId){payload.status=bf_status.value;payload.end_date=['結束','腰斬','免單結束','直購'].includes(bf_status.value)?(bf_end.value||localYMD()):null}else{payload.status='進行中';payload.end_date=null}
- let q;if(editingId)q=await sb.from('bundles').update(payload).eq('id',editingId);else q=await sb.from('bundles').insert(payload);if(q.error)return toast(q.error.message);toast(editingId?'套組已更新':'套組已建立');closeModal();await loadAll()
+ closeModal();await loadAll()
 }
 function openSaleForm(){
  const defaultOwner=selectedOwner==='ALL'?(owners.find(ownerOperational)?.id||''):selectedOwner;
@@ -299,7 +299,7 @@ async function openSaleEdit(id){
 function renderSaleForm(sale,paymentData=[]){
  const isEdit=!!editingId;
  document.getElementById('modal').innerHTML=`<div class="modal"><div class="section-head"><h3>${isEdit?'編輯':'新增'}銷售紀錄</h3><button class="btn" type="button" onclick="closeModal()">關閉</button></div><form onsubmit="saveSale(event)"><div class="form-grid">
- <div class="field"><label>老闆</label><select id="sf_owner" onchange="refreshBundleOptions('')" required>${ownerOptions(sale.owner_id)}</select></div>
+ <div class="field"><label>老闆</label><select id="sf_owner" onchange="refreshBundleOptions('')" required>${ownerOptions(sale.owner_id,false,!isEdit)}</select></div>
  <div class="field"><label>日期</label><input id="sf_date" type="date" value="${esc(sale.sale_date||localYMD())}" required></div>
  <div class="field full"><label>套組</label><div class="search-select"><input id="sf_bundle_search" placeholder="輸入套組編號、品名或日期，例如 E082302、任選220" onfocus="filterSaleBundleOptions(true)" oninput="filterSaleBundleOptions(true)" onblur="setTimeout(hideSaleBundleSuggestions,160)" autocomplete="off"><input id="sf_bundle" type="hidden" value=""><div id="sf_bundle_suggestions" class="search-select-menu"></div></div><div class="muted" style="font-size:12px;margin-top:5px">直接輸入即可即時篩選，點選下方套組就會帶入，不需要再另外開下拉選單。</div></div>
  <div class="field"><label>抽數</label><input id="sf_draws" type="number" min="1" step="1" value="${esc(sale.draws??1)}" oninput="updateCheckoutSummary()" required></div>
