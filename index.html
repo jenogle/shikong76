@@ -510,6 +510,7 @@ async function importExcel(){
 
 function closeModal(){document.getElementById('modal').style.display='none';document.getElementById('modal').innerHTML=''}
 function reportMonthKey(d){return String(d||'').slice(0,7)}
+function previousCompleteMonth(){const ymd=localYMD();const d=new Date(Number(ymd.slice(0,4)),Number(ymd.slice(5,7))-1,1);d.setMonth(d.getMonth()-1);return `${d.getFullYear()}-${pad2(d.getMonth()+1)}`}
 function commissionRevenue(ownerId,month){return sales.filter(x=>x.owner_id===ownerId&&String(x.sale_date||'').slice(0,7)===month&&x.payment_method!=='待定').reduce((a,x)=>a+Number(x.revenue||0),0)}
 function paidToOwner(ownerId,month){return ownerSettlements.filter(x=>x.owner_id===ownerId&&reportMonthKey(x.report_month)===month).reduce((a,x)=>a+Number(x.paid_to_owner||0),0)}
 function settlementCount(ownerId,month){return ownerSettlements.filter(x=>x.owner_id===ownerId&&reportMonthKey(x.report_month)===month).length}
@@ -529,11 +530,12 @@ async function addMonthlyExpense(ownerId,month){
 }
 function fmtDateTime(v){if(!v)return '—';try{return new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(v))}catch{return String(v)}}
 async function settleOwnerPayout(ownerId,month){
+ if(month!==previousCompleteMonth())return toast('本次結款只開放上一個完整月份');
  const eligibleRevenue=commissionRevenue(ownerId,month);
  const misc=monthlyExpenseTotal(ownerId,month);
- const ownerDue=Math.max(0,Math.round((eligibleRevenue*0.90-misc)*100)/100);
- const alreadyPaid=paidToOwner(ownerId,month);
- const outstanding=Math.max(0,Math.round((ownerDue-alreadyPaid)*100)/100);
+ const ownerDue=Math.max(0,Math.round(eligibleRevenue*0.90-misc));
+ const alreadyPaid=Math.round(paidToOwner(ownerId,month));
+ const outstanding=Math.max(0,Math.round(ownerDue-alreadyPaid));
  if(outstanding<=0)return toast('本月份目前沒有尚欠老闆的款項');
  if(!confirm(`${ownerName(ownerId)}｜${month}\n確認已支付老闆 ${money(outstanding)}？`))return;
  const q=await sb.rpc('settle_monthly_owner_payout',{p_owner_id:ownerId,p_report_month:month+'-01',p_note:'網站月結已結'});
@@ -552,13 +554,10 @@ function renderStoreBundleSettlements(ownerId){
    .filter(b=>closedStatuses.has(b.status))
    .sort((a,z)=>String(z.end_date||z.bundle_date||'').localeCompare(String(a.end_date||a.bundle_date||''))||compareBundleCodesDesc(a.code,z.code));
  const closedIds=new Set(rows.map(b=>b.id));
- const settledSales=ownerSales.filter(x=>closedIds.has(x.bundle_id));
- const paymentSummary=paymentSummaryForSales(settledSales);
  const totalRevenue=rows.reduce((a,b)=>a+Number(b._revenue||0),0);
  const totalCost=rows.reduce((a,b)=>a+Number(b.cost||0),0);
  const totalProfit=rows.reduce((a,b)=>a+Number(b._profit||0),0);
  const totalDraws=rows.reduce((a,b)=>a+Number(b._draws||0),0);
- const paymentTotal=paymentSummary.reduce((a,p)=>a+Number(p.amount||0),0);
  document.getElementById('pageTitle').textContent=`${ownerName(ownerId)}｜套組結算`;
  document.getElementById('pageSubtitle').textContent='店內套無到期限制；僅計算已結束套組，進行中套組不列入結算';
  document.getElementById('content').innerHTML=`
@@ -568,10 +567,6 @@ function renderStoreBundleSettlements(ownerId){
      <div class="report-chip"><span>結算成本</span><b>${money(totalCost)}</b></div>
      <div class="report-chip"><span>結算毛利</span><b>${money(totalProfit)}</b></div>
      <div class="report-chip"><span>銷售抽數</span><b>${totalDraws}</b></div>
-   </div>
-   <div class="section">
-     <div class="section-head"><h2>付款方式結算明細</h2></div>
-     ${paymentSummary.length?`<div class="report-summary">${paymentSummary.map(p=>`<div class="report-chip"><span>${esc(p.method)}</span><b>${money(p.amount)}</b></div>`).join('')}</div><div class="muted" style="font-size:12px">付款方式淨額合計 ${money(paymentTotal)}；現金找零已自動從現金實收扣除。</div>`:'<div class="empty">目前沒有可彙總的付款紀錄。</div>'}
    </div>
    <div class="section">
      <div class="section-head"><h2>已結束套組</h2></div>
@@ -591,15 +586,15 @@ function renderMonthlyReports(){
  const months=Object.keys(grouped).sort();
  const latest=months[months.length-1]||'';
  const currentMonth=localYMD().slice(0,7);
- const activeMonth=months.includes(currentMonth)?currentMonth:latest;
+ const settlementMonth=previousCompleteMonth();
  const latestRows=latest?(grouped[latest]||[]):[];
  const totalRevenue=rows.reduce((a,r)=>a+Number(r.revenue||0),0);
- const commissionRows=rows.map(r=>{const m=reportMonthKey(r.report_month),base=commissionRevenue(r.owner_id,m),commission=Math.round(base*.10*100)/100,misc=monthlyExpenseTotal(r.owner_id,m),ownerDue=Math.max(0,Math.round((base-commission-misc)*100)/100),paid=paidToOwner(r.owner_id,m),outstanding=Math.max(0,Math.round((ownerDue-paid)*100)/100),overpaid=Math.max(0,Math.round((paid-ownerDue)*100)/100);return {...r,_month:m,_commissionBase:base,_commissionDue:commission,_miscExpense:misc,_ownerDue:ownerDue,_paidToOwner:paid,_ownerOutstanding:outstanding,_ownerOverpaid:overpaid}});
+ const commissionRows=rows.map(r=>{const m=reportMonthKey(r.report_month),base=commissionRevenue(r.owner_id,m),commission=Math.round(base*.10*100)/100,misc=monthlyExpenseTotal(r.owner_id,m),ownerDue=Math.max(0,Math.round(base-commission-misc)),paid=Math.round(paidToOwner(r.owner_id,m)),outstanding=Math.max(0,Math.round(ownerDue-paid)),overpaid=Math.max(0,Math.round(paid-ownerDue));return {...r,_month:m,_commissionBase:base,_commissionDue:commission,_miscExpense:misc,_ownerDue:ownerDue,_paidToOwner:paid,_ownerOutstanding:outstanding,_ownerOverpaid:overpaid}});
  const totalCommission=commissionRows.reduce((a,r)=>a+r._commissionDue,0),totalMisc=commissionRows.reduce((a,r)=>a+r._miscExpense,0),totalOwnerDue=commissionRows.reduce((a,r)=>a+r._ownerDue,0),totalPaid=commissionRows.reduce((a,r)=>a+r._paidToOwner,0),totalOutstanding=commissionRows.reduce((a,r)=>a+r._ownerOutstanding,0);
- const activeRows=commissionRows.filter(r=>r._month===activeMonth).sort((a,b)=>String(ownerName(a.owner_id)).localeCompare(String(ownerName(b.owner_id)),'zh-Hant'));
+ const activeRows=commissionRows.filter(r=>r._month===settlementMonth).sort((a,b)=>String(ownerName(a.owner_id)).localeCompare(String(ownerName(b.owner_id)),'zh-Hant'));
  const history=(selectedOwner==='ALL'?ownerSettlements.filter(x=>!isStoreOwnerId(x.owner_id)):ownerSettlements.filter(x=>x.owner_id===selectedOwner)).slice().sort((a,b)=>String(b.settled_at||'').localeCompare(String(a.settled_at||'')));
  const quickSettle=activeRows.length?`<div class="section"><div class="section-head"><div><h2>月中／本次結款</h2></div></div><div class="settle-grid">${activeRows.map(r=>{const key=`${r.owner_id}_${r._month.replace('-','_')}`;return `<div class="settle-card"><div class="settle-card-head"><div><b>${esc(ownerName(r.owner_id))}</b><span>${r._month}</span></div>${r._ownerOverpaid>0?'<span class="pill bad">已超付</span>':r._ownerOutstanding>0?'<span class="pill warn">尚未付清</span>':'<span class="pill ok">已付清</span>'}</div><div class="settle-numbers"><div><span>有效營收</span><b>${money(r._commissionBase)}</b></div><div><span>10% 抽成</span><b>${money(r._commissionDue)}</b></div><div><span>雜項支出</span><b>${money(r._miscExpense)}</b></div><div><span>實際應付老闆</span><b>${money(r._ownerDue)}</b></div><div><span>已付</span><b>${money(r._paidToOwner)}</b></div><div class="settle-due"><span>${r._ownerOverpaid>0?'目前超付':'本次尚欠'}</span><b>${money(r._ownerOverpaid>0?r._ownerOverpaid:r._ownerOutstanding)}</b></div></div><div style="display:grid;grid-template-columns:120px 1fr auto;gap:8px;margin:10px 0"><input id="misc_amount_${key}" type="number" min="1" step="1" placeholder="雜支金額" style="padding:9px;border:1px solid #d6e0ea;border-radius:9px"><input id="misc_note_${key}" placeholder="雜支備註" style="padding:9px;border:1px solid #d6e0ea;border-radius:9px"><button class="btn" onclick="addMonthlyExpense('${r.owner_id}','${r._month}')">扣除雜支</button></div>${r._ownerOutstanding>0?`<button class="btn primary settle-action" onclick="settleOwnerPayout('${r.owner_id}','${r._month}')">本次結款 ${money(r._ownerOutstanding)}</button>`:`<button class="btn settle-action" disabled>${r._ownerOverpaid>0?'目前已超付':'本期目前已結清'}</button>`}</div>`}).join('')}</div></div>`:'';
- const detail=months.length?`<div class="section"><div class="section-head"><h2>月結明細</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>月份</th><th>老闆</th><th>營收</th><th>抽成基礎</th><th>10% 抽成</th><th>雜項支出</th><th>實際應付老闆</th><th>已付老闆</th><th>尚欠老闆</th><th>狀態</th><th>操作</th></tr></thead><tbody>${commissionRows.slice().sort((a,b)=>String(b.report_month).localeCompare(String(a.report_month))||String(ownerName(a.owner_id)).localeCompare(String(ownerName(b.owner_id)),'zh-Hant')).map(r=>`<tr><td><b>${r._month}</b></td><td>${esc(ownerName(r.owner_id))}</td><td>${money(r.revenue)}</td><td>${money(r._commissionBase)}</td><td><b>${money(r._commissionDue)}</b></td><td><b>${money(r._miscExpense)}</b></td><td><b>${money(r._ownerDue)}</b></td><td>${money(r._paidToOwner)}${settlementCount(r.owner_id,r._month)>1?` <span class="muted">(${settlementCount(r.owner_id,r._month)}次)</span>`:''}</td><td><b>${money(r._ownerOutstanding)}</b>${r._ownerOverpaid>0?` <span class="discount-value">超付 ${money(r._ownerOverpaid)}</span>`:''}</td><td>${r._ownerOverpaid>0?'<span class="pill bad">已超付</span>':r._ownerOutstanding>0?'<span class="pill warn">未付清</span>':'<span class="pill ok">已付清</span>'}</td><td>${r._ownerOutstanding>0?`<button class="btn primary" onclick="settleOwnerPayout('${r.owner_id}','${r._month}')">本次結款</button>`:'—'}</td></tr>`).join('')}</tbody></table></div></div>`:'';
+ const detail=months.length?`<div class="section"><div class="section-head"><h2>月結明細</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>月份</th><th>老闆</th><th>營收</th><th>抽成基礎</th><th>10% 抽成</th><th>雜項支出</th><th>實際應付老闆</th><th>已付老闆</th><th>尚欠老闆</th><th>狀態</th><th>操作</th></tr></thead><tbody>${commissionRows.slice().sort((a,b)=>String(b.report_month).localeCompare(String(a.report_month))||String(ownerName(a.owner_id)).localeCompare(String(ownerName(b.owner_id)),'zh-Hant')).map(r=>`<tr><td><b>${r._month}</b></td><td>${esc(ownerName(r.owner_id))}</td><td>${money(r.revenue)}</td><td>${money(r._commissionBase)}</td><td><b>${money(r._commissionDue)}</b></td><td><b>${money(r._miscExpense)}</b></td><td><b>${money(r._ownerDue)}</b></td><td>${money(r._paidToOwner)}${settlementCount(r.owner_id,r._month)>1?` <span class="muted">(${settlementCount(r.owner_id,r._month)}次)</span>`:''}</td><td><b>${money(r._ownerOutstanding)}</b>${r._ownerOverpaid>0?` <span class="discount-value">超付 ${money(r._ownerOverpaid)}</span>`:''}</td><td>${r._ownerOverpaid>0?'<span class="pill bad">已超付</span>':r._ownerOutstanding>0?'<span class="pill warn">未付清</span>':'<span class="pill ok">已付清</span>'}</td><td>${r._month===settlementMonth&&r._ownerOutstanding>0?`<button class="btn primary" onclick="settleOwnerPayout('${r.owner_id}','${r._month}')">本次結款</button>`:'—'}</td></tr>`).join('')}</tbody></table></div></div>`:'';
  const historyHtml=history.length?`<div class="section"><div class="section-head"><h2>結款紀錄</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>結款時間</th><th>月份</th><th>老闆</th><th>當時有效營收</th><th>當時抽成</th><th>本次支付老闆</th></tr></thead><tbody>${history.map(x=>`<tr><td>${esc(fmtDateTime(x.settled_at))}</td><td>${esc(reportMonthKey(x.report_month))}</td><td>${esc(ownerName(x.owner_id))}</td><td>${money(x.eligible_revenue_snapshot)}</td><td>${money(x.commission_snapshot)}</td><td><b>${money(x.paid_to_owner)}</b></td></tr>`).join('')}</tbody></table></div></div>`:'';
  const expenseHistory=(selectedOwner==='ALL'?ownerExpenses.filter(x=>!isStoreOwnerId(x.owner_id)):ownerExpenses.filter(x=>x.owner_id===selectedOwner)).slice().sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
  const expenseHistoryHtml=expenseHistory.length?`<div class="section"><div class="section-head"><h2>雜項支出紀錄</h2></div><div class="table-wrap"><table class="table"><thead><tr><th>日期</th><th>月份</th><th>老闆</th><th>金額</th><th>備註</th></tr></thead><tbody>${expenseHistory.map(x=>`<tr><td>${esc(x.incurred_on||'—')}</td><td>${esc(reportMonthKey(x.report_month))}</td><td>${esc(ownerName(x.owner_id))}</td><td><b class="discount-value">-${money(x.amount)}</b></td><td>${esc(x.note||'—')}</td></tr>`).join('')}</tbody></table></div></div>`:'';
