@@ -544,6 +544,28 @@ async function settleOwnerPayout(ownerId,month){
  if(c.error)return toast(c.error.message);
  ownerSettlements=c.data||[];toast(`已結清 ${money(outstanding)}`);renderMonthlyReports();
 }
+function storeBundleSettlementState(b){
+ if(!b.store_settlement_required)return {key:'history',label:'已結算',pill:'ok'};
+ if(b.store_settled_at)return {key:'settled',label:'已結算',pill:'ok'};
+ return {key:'pending',label:'待結算',pill:'warn'};
+}
+function storeSettlementRevenue(b){
+ if(b.store_settled_at&&b.store_settlement_revenue!==null&&b.store_settlement_revenue!==undefined)return Number(b.store_settlement_revenue||0);
+ return Number(b._revenue||0);
+}
+async function settleStoreBundle(bundleId){
+ const b=bundles.find(x=>x.id===bundleId);
+ if(!b)return toast('找不到套組');
+ const revenue=Number(b._revenue||0);
+ if(!confirm(`${b.code||''} ${b.product_name||''}\n確認完成店內套結算 ${money(revenue)}？`))return;
+ const q=await authRetry(()=>sb.rpc('settle_store_bundle',{p_bundle_id:bundleId}));
+ if(q.error)return toast(q.error.message||'套組結算失敗');
+ const refreshed=await authRetry(()=>sb.from('bundles').select('*').order('bundle_date',{ascending:false}));
+ if(refreshed.error)return toast(refreshed.error.message||'套組資料重新載入失敗');
+ bundles=(refreshed.data||[]).sort((a,b)=>{const dc=String(b.bundle_date||'').localeCompare(String(a.bundle_date||''));return dc||compareBundleCodesDesc(a.code,b.code)});
+ toast(`已完成結算 ${money(q.data?.settlement_revenue??revenue)}`);
+ renderStoreBundleSettlements(b.owner_id);
+}
 function renderStoreBundleSettlements(ownerId){
  const closedStatuses=new Set(['結束','免單結束','腰斬','直購']);
  const ownerBundles=bundles.filter(b=>b.owner_id===ownerId);
@@ -553,28 +575,36 @@ function renderStoreBundleSettlements(ownerId){
    .map(b=>derivedBundle(b,calc.stats))
    .filter(b=>closedStatuses.has(b.status))
    .sort((a,z)=>String(z.end_date||z.bundle_date||'').localeCompare(String(a.end_date||a.bundle_date||''))||compareBundleCodesDesc(a.code,z.code));
- const closedIds=new Set(rows.map(b=>b.id));
- const totalRevenue=rows.reduce((a,b)=>a+Number(b._revenue||0),0);
- const totalCost=rows.reduce((a,b)=>a+Number(b.cost||0),0);
- const totalProfit=rows.reduce((a,b)=>a+Number(b._profit||0),0);
- const totalDraws=rows.reduce((a,b)=>a+Number(b._draws||0),0);
+ const pendingRows=rows.filter(b=>storeBundleSettlementState(b).key==='pending');
+ const settledRows=rows.filter(b=>storeBundleSettlementState(b).key!=='pending');
+ const totalRevenue=settledRows.reduce((a,b)=>a+storeSettlementRevenue(b),0);
+ const totalCost=settledRows.reduce((a,b)=>a+Number(b.cost||0),0);
+ const totalProfit=settledRows.reduce((a,b)=>a+(storeSettlementRevenue(b)-Number(b.cost||0)),0);
+ const totalDraws=settledRows.reduce((a,b)=>a+Number(b._draws||0),0);
+ const pendingRevenue=pendingRows.reduce((a,b)=>a+Number(b._revenue||0),0);
+ const today=localYMD();
  document.getElementById('pageTitle').textContent=`${ownerName(ownerId)}｜套組結算`;
- document.getElementById('pageSubtitle').textContent='店內套無到期限制；僅計算已結束套組，進行中套組不列入結算';
+ document.getElementById('pageSubtitle').textContent='店內套採日結；套組結束後先進入待結算，實際按下結算後才完成。前日未結會持續帶入。';
+ const pendingHtml=`<div class="section">
+   <div class="section-head"><div><h2>今日應結算</h2><div class="muted" style="margin-top:4px">含今日結束與前日尚未結算套組</div></div><div style="font-size:24px;font-weight:900">${money(pendingRevenue)}</div></div>
+   ${pendingRows.length?`<div class="table-wrap"><table class="table"><thead><tr><th>來源</th><th>結束日期</th><th>套組編號</th><th>品名</th><th>應結算金額</th><th>付款方式明細</th><th>操作</th></tr></thead><tbody>${pendingRows.map(b=>{const bs=ownerSales.filter(x=>x.bundle_id===b.id);const ps=paymentSummaryForSales(bs);const carry=String(b.end_date||'')===today?'<span class="pill ok">今日</span>':'<span class="pill warn">前日未結</span>';return `<tr><td>${carry}</td><td>${esc(b.end_date||'—')}</td><td><b>${esc(b.code||'')}</b></td><td>${esc(b.product_name||'')}</td><td><b>${money(b._revenue)}</b></td><td>${ps.length?ps.map(p=>`${esc(p.method)} ${money(p.amount)}`).join('<br>'):'—'}</td><td><div class="split"><button class="btn" onclick="openBundleLedger('${b.id}')">明細帳</button><button class="btn primary" onclick="settleStoreBundle('${b.id}')">結算</button></div></td></tr>`}).join('')}</tbody></table></div>`:'<div class="empty">目前沒有待結算的店內套組。</div>'}
+ </div>`;
  document.getElementById('content').innerHTML=`
+   ${pendingHtml}
    <div class="report-summary">
-     <div class="report-chip"><span>已結算套組</span><b>${rows.length}</b></div>
-     <div class="report-chip"><span>結算營收</span><b>${money(totalRevenue)}</b></div>
-     <div class="report-chip"><span>結算成本</span><b>${money(totalCost)}</b></div>
-     <div class="report-chip"><span>結算毛利</span><b>${money(totalProfit)}</b></div>
-     <div class="report-chip"><span>銷售抽數</span><b>${totalDraws}</b></div>
+     <div class="report-chip"><span>已結算套組</span><b>${settledRows.length}</b></div>
+     <div class="report-chip"><span>已結算營收</span><b>${money(totalRevenue)}</b></div>
+     <div class="report-chip"><span>已結算成本</span><b>${money(totalCost)}</b></div>
+     <div class="report-chip"><span>已結算毛利</span><b>${money(totalProfit)}</b></div>
+     <div class="report-chip"><span>已結算抽數</span><b>${totalDraws}</b></div>
    </div>
    <div class="section">
-     <div class="section-head"><h2>已結束套組</h2></div>
+     <div class="section-head"><h2>店內套結算紀錄</h2></div>
      <div class="table-wrap"><table class="table">
-       <thead><tr><th>結束日期</th><th>套組編號</th><th>品名</th><th>狀態</th><th>成本</th><th>營收</th><th>毛利</th><th>已刮 / 總刮</th><th>付款方式明細</th><th>結算狀態</th><th>操作</th></tr></thead>
-       <tbody>${rows.map(b=>{const bs=ownerSales.filter(x=>x.bundle_id===b.id);const ps=paymentSummaryForSales(bs);return `<tr><td>${esc(b.end_date||'—')}</td><td><b>${esc(b.code||'')}</b></td><td>${esc(b.product_name||'')}</td><td>${statusPill(b.status)}</td><td>${money(b.cost)}</td><td><b>${money(b._revenue)}</b></td><td><b>${money(b._profit)}</b></td><td>${drawProgress(b)}</td><td>${ps.length?ps.map(p=>`${esc(p.method)} ${money(p.amount)}`).join('<br>'):'—'}</td><td><span class="pill ok">已結算</span></td><td><button class="btn" onclick="openBundleLedger('${b.id}')">明細帳</button></td></tr>`}).join('')}</tbody>
+       <thead><tr><th>結束日期</th><th>套組編號</th><th>品名</th><th>套組狀態</th><th>成本</th><th>營收</th><th>毛利</th><th>已刮 / 總刮</th><th>付款方式明細</th><th>結算狀態</th><th>結算時間</th><th>操作</th></tr></thead>
+       <tbody>${rows.map(b=>{const bs=ownerSales.filter(x=>x.bundle_id===b.id);const ps=paymentSummaryForSales(bs);const ss=storeBundleSettlementState(b);const revenue=ss.key==='settled'?storeSettlementRevenue(b):Number(b._revenue||0);const profit=revenue-Number(b.cost||0);return `<tr><td>${esc(b.end_date||'—')}</td><td><b>${esc(b.code||'')}</b></td><td>${esc(b.product_name||'')}</td><td>${statusPill(b.status)}</td><td>${money(b.cost)}</td><td><b>${money(revenue)}</b></td><td><b>${money(profit)}</b></td><td>${drawProgress(b)}</td><td>${ps.length?ps.map(p=>`${esc(p.method)} ${money(p.amount)}`).join('<br>'):'—'}</td><td><span class="pill ${ss.pill}">${ss.label}</span></td><td>${b.store_settled_at?esc(fmtDateTime(b.store_settled_at)):(ss.key==='history'?'<span class="muted">歷史已完成</span>':'—')}</td><td><div class="split"><button class="btn" onclick="openBundleLedger('${b.id}')">明細帳</button>${ss.key==='pending'?`<button class="btn primary" onclick="settleStoreBundle('${b.id}')">結算</button>`:''}</div></td></tr>`}).join('')}</tbody>
      </table></div>
-     ${rows.length?'':'<div class="empty">目前沒有已結束、可結算的店內套組。</div>'}
+     ${rows.length?'':'<div class="empty">目前沒有已結束的店內套組。</div>'}
    </div>`;
 }
 function renderMonthlyReports(){
