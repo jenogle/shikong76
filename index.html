@@ -147,6 +147,20 @@ function saleBalanceDue(x){
  const change=Math.max(Number(x?.change_due||0),0);
  return Math.max(revenue-received+change,0);
 }
+function saleNetReceived(x){
+ if(['待定','免單結束','折扣全抵'].includes(x?.payment_method))return 0;
+ return Math.max(Number(x?.amount_received||0)-Math.max(Number(x?.change_due||0),0),0);
+}
+function receivedByBundleMap(bundlesList,salesList){
+ const keyMap=new Map(bundlesList.map(x=>[`${x.owner_id}::${x.code}`,x.id]));
+ const out=new Map();
+ for(const x of salesList){
+  const bid=x.bundle_id||(x.bundle_code?keyMap.get(`${x.owner_id}::${x.bundle_code}`):null);
+  if(!bid)continue;
+  out.set(bid,(out.get(bid)||0)+saleNetReceived(x));
+ }
+ return out;
+}
 function balanceDueHtml(x){
  const due=saleBalanceDue(x);
  return due!==0?`<b style="color:#dc2626">${money(due)}</b>`:`${money(0)}`;
@@ -184,9 +198,6 @@ function renderOverview(){
  const byBundle=db.filter(x=>x._salesCount>0).map(x=>({name:`${x.code} ${x.product_name}`,cost:Number(x.cost||0),revenue:Number(x._revenue||0)})).sort((a,z)=>z.revenue-a.revenue).slice(0,12);
  const statusOrder=['進行中','結束','免單結束','腰斬','直購'];
  const statusCounts=statusOrder.map(status=>({status,count:b.filter(x=>x.status===status).length})).filter(x=>x.count>0);
- const activeRevenueAll=db.filter(x=>x.status==='進行中'&&Number(x._revenue||0)>0).map(x=>({name:`${x.code} ${x.product_name}`,revenue:Number(x._revenue||0)})).sort((a,z)=>z.revenue-a.revenue);
- const activeRevenueTotal=activeRevenueAll.reduce((a,x)=>a+Number(x.revenue||0),0);
- const activeRevenue=activeRevenueAll.slice(0,12);
  document.getElementById('content').innerHTML=`
  <div class="charts">
    <div class="section"><div class="section-head"><h2>每月成本 vs 銷售額</h2></div><div class="chart-box"><canvas id="overviewMonthlyCostRevenue"></canvas></div></div>
@@ -194,7 +205,6 @@ function renderOverview(){
  </div>
  <div class="charts">
    <div class="section"><div class="section-head"><h2>套組成本／銷售額比較</h2></div><div class="chart-box"><canvas id="overviewBundleCostRevenue"></canvas></div></div>
-   <div class="section"><div class="section-head"><div><h2>進行中套組已產生營收</h2><div class="muted" style="font-size:12px;margin-top:4px">目前進行中套組累積營收</div></div><div style="font-size:26px;font-weight:900">${money(activeRevenueTotal)}</div></div><div class="chart-box"><canvas id="overviewActiveRevenue"></canvas></div></div>
  </div>`;
  setTimeout(()=>{
    if(currentView!=='overview')return;
@@ -206,11 +216,9 @@ function renderOverview(){
    if(c2)chartInstances.push(new Chart(c2,{type:'doughnut',data:{labels:statusCounts.map(x=>x.status),datasets:[{label:'套組數',data:statusCounts.map(x=>Number(x.count||0))}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}}}}));
    const c3=document.getElementById('overviewBundleCostRevenue');
    if(c3)chartInstances.push(new Chart(c3,{type:'bar',data:{labels:byBundle.map(x=>x.name),datasets:[{label:'成本',data:byBundle.map(x=>Number(x.cost||0))},{label:'銷售額',data:byBundle.map(x=>Number(x.revenue||0))}]},options:chartOptions(true)}));
-   const c4=document.getElementById('overviewActiveRevenue');
-   if(c4)chartInstances.push(new Chart(c4,{type:'bar',data:{labels:activeRevenue.map(x=>x.name),datasets:[{label:'已產生營收',data:activeRevenue.map(x=>Number(x.revenue||0))}]},options:chartOptions(true)}));
  },0)
 }
-function renderBundles(){const {b,s}=ownerFiltered();const calc=salesStatsForBundles(b,s),allDb=b.map(x=>derivedBundle(x,calc.stats)).sort((a,z)=>{const d=String(z.bundle_date||'').localeCompare(String(a.bundle_date||''));return d||compareBundleCodesDesc(a.code,z.code)});const statuses=['ALL','進行中','結束','免單結束','腰斬','直購'];const db=bundleStatusFilter==='ALL'?allDb:allDb.filter(x=>x.status===bundleStatusFilter);document.getElementById('pageTitle').textContent=(selectedOwner==='ALL'?'全部老闆':ownerName(selectedOwner))+'｜套組管理';document.getElementById('pageSubtitle').textContent='套組基本資料獨立管理｜依日期新到舊，再依套組編號大到小排序';const totalCost=b.reduce((a,x)=>a+Number(x.cost||0),0),totalRevenue=s.reduce((a,x)=>a+Number(x.revenue||0),0),totalProfit=allDb.reduce((a,x)=>a+x._profit,0)+calc.unlinkedRevenue,active=b.filter(x=>x.status==='進行中').length;document.getElementById('content').innerHTML=`<div class="grid"><div class="kpi"><div class="label">套組數</div><div class="value">${b.length}</div></div><div class="kpi"><div class="label">進行中</div><div class="value">${active}</div></div><div class="kpi"><div class="label">套組成本</div><div class="value">${money(totalCost)}</div></div><div class="kpi"><div class="label">套組毛利</div><div class="value">${money(totalProfit)}</div></div></div><div class="section"><div class="section-head"><h2>套組清單</h2><button class="btn primary" onclick="openBundleForm()">＋ 新增套組</button></div><div class="filters" style="grid-template-columns:minmax(180px,260px)"><div class="field"><label>狀態篩選</label><select onchange="bundleStatusFilter=this.value;renderBundles()">${statuses.map(x=>`<option value="${x}" ${bundleStatusFilter===x?'selected':''}>${x==='ALL'?'全部狀態':x}</option>`).join('')}</select></div></div><div class="table-wrap"><table class="table"><thead><tr><th>老闆</th><th>日期</th><th>編號</th><th>品名</th><th>成本</th><th>銷售額</th><th>目前已賺</th><th>毛利</th><th>已刮 / 總刮</th><th>一抽價格</th><th>狀態</th><th>結束日期</th><th>操作</th></tr></thead><tbody>${db.map(x=>`<tr><td>${esc(ownerName(x.owner_id))}</td><td>${x.bundle_date||''}</td><td><b>${esc(x.code)}</b></td><td>${esc(x.product_name)}</td><td>${money(x.cost)}</td><td>${money(x._revenue)}</td><td>${x.status==='進行中'?`<b>${money(x._revenue)}</b>`:'<span class="muted">—</span>'}</td><td><b>${money(x._profit)}</b></td><td>${drawProgress(x)}</td><td>${esc(x.price||'')}</td><td>${statusPill(x.status)}</td><td>${x.end_date?esc(x.end_date):'<span class="muted">—</span>'}</td><td><div class="split"><button class="btn" onclick="openBundleLedger('${x.id}')">明細帳</button><button class="btn" onclick="openBundleForm('${x.id}')">編輯</button></div></td></tr>`).join('')}</tbody></table></div>${db.length?'':'<div class="empty">這個篩選條件目前沒有套組資料</div>'}</div>`}
+function renderBundles(){const {b,s}=ownerFiltered();const receivedMap=receivedByBundleMap(b,s);const calc=salesStatsForBundles(b,s),allDb=b.map(x=>derivedBundle(x,calc.stats)).sort((a,z)=>{const d=String(z.bundle_date||'').localeCompare(String(a.bundle_date||''));return d||compareBundleCodesDesc(a.code,z.code)});const statuses=['ALL','進行中','結束','免單結束','腰斬','直購'];const db=bundleStatusFilter==='ALL'?allDb:allDb.filter(x=>x.status===bundleStatusFilter);document.getElementById('pageTitle').textContent=(selectedOwner==='ALL'?'全部老闆':ownerName(selectedOwner))+'｜套組管理';document.getElementById('pageSubtitle').textContent='套組基本資料獨立管理｜依日期新到舊，再依套組編號大到小排序';const totalCost=b.reduce((a,x)=>a+Number(x.cost||0),0),totalRevenue=s.reduce((a,x)=>a+Number(x.revenue||0),0),totalProfit=allDb.reduce((a,x)=>a+x._profit,0)+calc.unlinkedRevenue,active=b.filter(x=>x.status==='進行中').length;document.getElementById('content').innerHTML=`<div class="grid"><div class="kpi"><div class="label">套組數</div><div class="value">${b.length}</div></div><div class="kpi"><div class="label">進行中</div><div class="value">${active}</div></div><div class="kpi"><div class="label">套組成本</div><div class="value">${money(totalCost)}</div></div><div class="kpi"><div class="label">套組毛利</div><div class="value">${money(totalProfit)}</div></div></div><div class="section"><div class="section-head"><h2>套組清單</h2><button class="btn primary" onclick="openBundleForm()">＋ 新增套組</button></div><div class="filters" style="grid-template-columns:minmax(180px,260px)"><div class="field"><label>狀態篩選</label><select onchange="bundleStatusFilter=this.value;renderBundles()">${statuses.map(x=>`<option value="${x}" ${bundleStatusFilter===x?'selected':''}>${x==='ALL'?'全部狀態':x}</option>`).join('')}</select></div></div><div class="table-wrap"><table class="table"><thead><tr><th>老闆</th><th>日期</th><th>編號</th><th>品名</th><th>成本</th><th>銷售額</th><th>已賺多少</th><th>毛利</th><th>已刮 / 總刮</th><th>一抽價格</th><th>狀態</th><th>結束日期</th><th>操作</th></tr></thead><tbody>${db.map(x=>`<tr><td>${esc(ownerName(x.owner_id))}</td><td>${x.bundle_date||''}</td><td><b>${esc(x.code)}</b></td><td>${esc(x.product_name)}</td><td>${money(x.cost)}</td><td>${money(x._revenue)}</td><td>${x.status==='進行中'?`<b>${money(receivedMap.get(x.id)||0)}</b>`:'<span class="muted">—</span>'}</td><td><b>${money(x._profit)}</b></td><td>${drawProgress(x)}</td><td>${esc(x.price||'')}</td><td>${statusPill(x.status)}</td><td>${x.end_date?esc(x.end_date):'<span class="muted">—</span>'}</td><td><div class="split"><button class="btn" onclick="openBundleLedger('${x.id}')">明細帳</button><button class="btn" onclick="openBundleForm('${x.id}')">編輯</button></div></td></tr>`).join('')}</tbody></table></div>${db.length?'':'<div class="empty">這個篩選條件目前沒有套組資料</div>'}</div>`}
 function renderSalesAnalytics(){
  const {b,s}=ownerFiltered();
  const calc=salesStatsForBundles(b,s),db=b.map(x=>derivedBundle(x,calc.stats));
@@ -341,7 +349,7 @@ function renderSaleForm(sale,paymentData=[]){
 function saleBundleList(owner,selected=''){return bundles.filter(b=>(!owner||b.owner_id===owner)&&(b.status==='進行中'||b.id===selected)).sort((a,z)=>{const d=String(z.bundle_date||'').localeCompare(String(a.bundle_date||''));return d||compareBundleCodesDesc(a.code,z.code)})}
 function saleBundleLabel(b){return `${b.code||''}｜${b.product_name||''}${b.bundle_date?`｜${b.bundle_date}`:''}`}
 function saleBundleMatches(b,keyword=''){const kw=String(keyword||'').trim().toLowerCase();return !kw||`${b.code||''} ${b.product_name||''} ${b.bundle_date||''}`.toLowerCase().includes(kw)}
-function saleBundleSuggestionHtml(b){const derived=derivedBundle(b,salesStatsForBundles([b],sales.filter(s=>s.bundle_id===b.id)).stats);return `<button type="button" class="search-select-item" onmousedown="event.preventDefault()" onclick="selectSaleBundle('${b.id}')"><b>${esc(b.code||'')}</b><span>${esc(b.product_name||'')}</span><small>${esc(b.bundle_date||'')}｜${drawProgress(derived)}｜目前已賺 ${money(derived._revenue||0)}</small></button>`}
+function saleBundleSuggestionHtml(b){const bundleSales=sales.filter(s=>s.bundle_id===b.id);const derived=derivedBundle(b,salesStatsForBundles([b],bundleSales).stats);const received=bundleSales.reduce((a,x)=>a+saleNetReceived(x),0);return `<button type="button" class="search-select-item" onmousedown="event.preventDefault()" onclick="selectSaleBundle('${b.id}')"><b>${esc(b.code||'')}</b><span>${esc(b.product_name||'')}</span><small>${esc(b.bundle_date||'')}｜${drawProgress(derived)}｜已賺多少 ${money(received)}</small></button>`}
 function refreshBundleOptions(selected=''){const owner=document.getElementById('sf_owner'),bundle=document.getElementById('sf_bundle'),search=document.getElementById('sf_bundle_search');if(!owner||!bundle||!search)return;bundle.value=selected||'';const picked=bundles.find(b=>b.id===selected);search.value=picked?saleBundleLabel(picked):'';filterSaleBundleOptions(false);fillSaleProduct(!!editingId)}
 function filterSaleBundleOptions(forceOpen=true){const owner=document.getElementById('sf_owner'),bundle=document.getElementById('sf_bundle'),search=document.getElementById('sf_bundle_search'),menu=document.getElementById('sf_bundle_suggestions');if(!owner||!bundle||!search||!menu)return;const picked=bundles.find(b=>b.id===bundle.value);if(picked&&search.value!==saleBundleLabel(picked))bundle.value='';const matches=saleBundleList(owner.value,bundle.value).filter(b=>saleBundleMatches(b,search.value)).slice(0,40);menu.innerHTML=matches.length?matches.map(saleBundleSuggestionHtml).join(''):`<div class="search-select-empty">找不到符合的進行中套組</div>`;menu.classList.toggle('show',!!forceOpen);if(!bundle.value)fillSaleProduct(true)}
 function selectSaleBundle(id){const bundle=document.getElementById('sf_bundle'),search=document.getElementById('sf_bundle_search');const picked=bundles.find(b=>b.id===id);if(!bundle||!search||!picked)return;bundle.value=id;search.value=saleBundleLabel(picked);hideSaleBundleSuggestions();fillSaleProduct(false)}
