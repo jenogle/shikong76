@@ -181,6 +181,18 @@ function paymentSummaryForSales(list){
  for(const sale of list){for(const p of effectivePaymentRowsForSale(sale)){sums.set(p.method,(sums.get(p.method)||0)+Number(p.amount||0));}}
  return [...sums.entries()].map(([method,amount])=>({method,amount})).sort((a,b)=>b.amount-a.amount||String(a.method).localeCompare(String(b.method),'zh-Hant'));
 }
+function receivedPaymentSummaryForSales(list){
+ const sums=new Map();
+ for(const sale of list){
+   if(['待定','免單結束','折扣全抵'].includes(sale?.payment_method))continue;
+   for(const p of effectivePaymentRowsForSale(sale)){
+     const amount=Math.max(Number(p.amount||0),0);
+     if(amount<=0)continue;
+     sums.set(p.method,(sums.get(p.method)||0)+amount);
+   }
+ }
+ return [...sums.entries()].map(([method,amount])=>({method,amount})).sort((a,b)=>b.amount-a.amount||String(a.method).localeCompare(String(b.method),'zh-Hant'));
+}
 function paymentDetailHtml(sale){
  const rows=effectivePaymentRowsForSale(sale);
  return rows.map(p=>`${esc(p.method)} ${money(p.amount)}`).join('＋')||esc(sale.payment_method||'—');
@@ -188,34 +200,33 @@ function paymentDetailHtml(sale){
 function renderOverview(){
  const {b,s}=ownerFiltered();
  document.getElementById('pageTitle').textContent=(selectedOwner==='ALL'?'全部老闆':ownerName(selectedOwner))+'｜營運總覽';
- document.getElementById('pageSubtitle').textContent='圖表總覽｜套組與銷售趨勢集中查看';
- const calc=salesStatsForBundles(b,s),db=b.map(x=>derivedBundle(x,calc.stats));
- const months={};
- for(const x of s){const k=(x.sale_date||'未填').slice(0,7);months[k]=(months[k]||0)+Number(x.revenue||0)}
- const costByMonth={};
- for(const x of db){if(!x._salesCount)continue;const k=(x._firstSale||x.bundle_date||'未填').slice(0,7);costByMonth[k]=(costByMonth[k]||0)+Number(x.cost||0)}
- const labels=[...new Set([...Object.keys(months),...Object.keys(costByMonth)])].sort();
- const byBundle=db.filter(x=>x._salesCount>0).map(x=>({name:`${x.code} ${x.product_name}`,cost:Number(x.cost||0),revenue:Number(x._revenue||0)})).sort((a,z)=>z.revenue-a.revenue).slice(0,12);
- const statusOrder=['進行中','結束','免單結束','腰斬','直購'];
- const statusCounts=statusOrder.map(status=>({status,count:b.filter(x=>x.status===status).length})).filter(x=>x.count>0);
+ document.getElementById('pageSubtitle').textContent='進行中套組｜目前實際已收款依支付方式彙總';
+ const activeBundles=b.filter(x=>x.status==='進行中');
+ const activeIds=new Set(activeBundles.map(x=>x.id));
+ const activeKeys=new Set(activeBundles.map(x=>`${x.owner_id}::${x.code}`));
+ const activeSales=s.filter(x=>{
+   const linked=(x.bundle_id&&activeIds.has(x.bundle_id))||(!x.bundle_id&&x.bundle_code&&activeKeys.has(`${x.owner_id}::${x.bundle_code}`));
+   return linked&&!['待定','免單結束','折扣全抵'].includes(x.payment_method);
+ });
+ const paymentRows=receivedPaymentSummaryForSales(activeSales);
+ const totalReceived=paymentRows.reduce((sum,x)=>sum+Number(x.amount||0),0);
+ const methodCards=paymentRows.length?paymentRows.map(x=>`<div class="kpi"><div class="label">${esc(x.method)}</div><div class="value">${money(x.amount)}</div></div>`).join(''):'<div class="section" style="grid-column:1/-1"><div class="empty">目前進行中套組尚無已收款</div></div>';
  document.getElementById('content').innerHTML=`
- <div class="charts">
-   <div class="section"><div class="section-head"><h2>每月成本 vs 銷售額</h2></div><div class="chart-box"><canvas id="overviewMonthlyCostRevenue"></canvas></div></div>
-   <div class="section"><div class="section-head"><h2>套組狀態分布</h2></div><div class="chart-box small"><canvas id="overviewBundleStatus"></canvas></div></div>
+ <div class="grid">
+   <div class="kpi"><div class="label">進行中套組</div><div class="value">${activeBundles.length}</div></div>
+   <div class="kpi"><div class="label">已賺多少</div><div class="value">${money(totalReceived)}</div></div>
  </div>
- <div class="charts">
-   <div class="section"><div class="section-head"><h2>套組成本／銷售額比較</h2></div><div class="chart-box"><canvas id="overviewBundleCostRevenue"></canvas></div></div>
+ <div class="section">
+   <div class="section-head"><h2>已賺多少｜支付方式分區</h2></div>
+   <div class="grid" style="margin-bottom:${paymentRows.length?'18px':'0'}">${methodCards}</div>
+   ${paymentRows.length?'<div class="chart-box"><canvas id="overviewPaymentMethods"></canvas></div>':''}
  </div>`;
  setTimeout(()=>{
-   if(currentView!=='overview')return;
+   if(currentView!=='overview'||!paymentRows.length)return;
+   const c=document.getElementById('overviewPaymentMethods');
+   if(!c)return;
    const moneyTick=v=>new Intl.NumberFormat('zh-TW',{notation:'compact',maximumFractionDigits:1}).format(Number(v)||0);
-   const chartOptions=(horizontal=false)=>({responsive:true,maintainAspectRatio:false,indexAxis:horizontal?'y':'x',plugins:{legend:{position:'bottom'},tooltip:{callbacks:{label:(ctx)=>`${ctx.dataset.label||ctx.label}: ${money(Number(ctx.raw)||0)}`}}},scales:horizontal?{x:{beginAtZero:true,ticks:{callback:moneyTick}},y:{ticks:{autoSkip:false}}}:{y:{beginAtZero:true,ticks:{callback:moneyTick}},x:{}}});
-   const c1=document.getElementById('overviewMonthlyCostRevenue');
-   if(c1)chartInstances.push(new Chart(c1,{type:'bar',data:{labels,datasets:[{label:'成本',data:labels.map(k=>Number(costByMonth[k]||0))},{label:'銷售額',data:labels.map(k=>Number(months[k]||0))}]},options:chartOptions(false)}));
-   const c2=document.getElementById('overviewBundleStatus');
-   if(c2)chartInstances.push(new Chart(c2,{type:'doughnut',data:{labels:statusCounts.map(x=>x.status),datasets:[{label:'套組數',data:statusCounts.map(x=>Number(x.count||0))}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}}}}));
-   const c3=document.getElementById('overviewBundleCostRevenue');
-   if(c3)chartInstances.push(new Chart(c3,{type:'bar',data:{labels:byBundle.map(x=>x.name),datasets:[{label:'成本',data:byBundle.map(x=>Number(x.cost||0))},{label:'銷售額',data:byBundle.map(x=>Number(x.revenue||0))}]},options:chartOptions(true)}));
+   chartInstances.push(new Chart(c,{type:'bar',data:{labels:paymentRows.map(x=>x.method),datasets:[{label:'已收款',data:paymentRows.map(x=>Number(x.amount||0))}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:(ctx)=>`已收款：${money(Number(ctx.raw)||0)}`}}},scales:{y:{beginAtZero:true,ticks:{callback:moneyTick}},x:{ticks:{autoSkip:false}}}}}));
  },0)
 }
 function renderBundles(){const {b,s}=ownerFiltered();const receivedMap=receivedByBundleMap(b,s);const calc=salesStatsForBundles(b,s),allDb=b.map(x=>derivedBundle(x,calc.stats)).sort((a,z)=>{const d=String(z.bundle_date||'').localeCompare(String(a.bundle_date||''));return d||compareBundleCodesDesc(a.code,z.code)});const statuses=['ALL','進行中','結束','免單結束','腰斬','直購'];const db=bundleStatusFilter==='ALL'?allDb:allDb.filter(x=>x.status===bundleStatusFilter);document.getElementById('pageTitle').textContent=(selectedOwner==='ALL'?'全部老闆':ownerName(selectedOwner))+'｜套組管理';document.getElementById('pageSubtitle').textContent='套組基本資料獨立管理｜依日期新到舊，再依套組編號大到小排序';const totalCost=b.reduce((a,x)=>a+Number(x.cost||0),0),totalRevenue=s.reduce((a,x)=>a+Number(x.revenue||0),0),totalProfit=allDb.reduce((a,x)=>a+x._profit,0)+calc.unlinkedRevenue,active=b.filter(x=>x.status==='進行中').length;document.getElementById('content').innerHTML=`<div class="grid"><div class="kpi"><div class="label">套組數</div><div class="value">${b.length}</div></div><div class="kpi"><div class="label">進行中</div><div class="value">${active}</div></div><div class="kpi"><div class="label">套組成本</div><div class="value">${money(totalCost)}</div></div><div class="kpi"><div class="label">套組毛利</div><div class="value">${money(totalProfit)}</div></div></div><div class="section"><div class="section-head"><h2>套組清單</h2><button class="btn primary" onclick="openBundleForm()">＋ 新增套組</button></div><div class="filters" style="grid-template-columns:minmax(180px,260px)"><div class="field"><label>狀態篩選</label><select onchange="bundleStatusFilter=this.value;renderBundles()">${statuses.map(x=>`<option value="${x}" ${bundleStatusFilter===x?'selected':''}>${x==='ALL'?'全部狀態':x}</option>`).join('')}</select></div></div><div class="table-wrap"><table class="table"><thead><tr><th>老闆</th><th>日期</th><th>編號</th><th>品名</th><th>成本</th><th>銷售額</th><th>已賺多少</th><th>毛利</th><th>已刮 / 總刮</th><th>一抽價格</th><th>狀態</th><th>結束日期</th><th>操作</th></tr></thead><tbody>${db.map(x=>`<tr><td>${esc(ownerName(x.owner_id))}</td><td>${x.bundle_date||''}</td><td><b>${esc(x.code)}</b></td><td>${esc(x.product_name)}</td><td>${money(x.cost)}</td><td>${money(x._revenue)}</td><td>${x.status==='進行中'?`<b>${money(receivedMap.get(x.id)||0)}</b>`:'<span class="muted">—</span>'}</td><td><b>${money(x._profit)}</b></td><td>${drawProgress(x)}</td><td>${esc(x.price||'')}</td><td>${statusPill(x.status)}</td><td>${x.end_date?esc(x.end_date):'<span class="muted">—</span>'}</td><td><div class="split"><button class="btn" onclick="openBundleLedger('${x.id}')">明細帳</button><button class="btn" onclick="openBundleForm('${x.id}')">編輯</button></div></td></tr>`).join('')}</tbody></table></div>${db.length?'':'<div class="empty">這個篩選條件目前沒有套組資料</div>'}</div>`}
@@ -261,6 +272,8 @@ function openBundleLedger(id){
  const profit=rows.length?salesRevenue-cost:0;
  const historical=Number(b.historical_draws||0);
  const target=totalDrawTarget(b);
+ const paymentSummary=receivedPaymentSummaryForSales(rows);
+ const netReceived=paymentSummary.reduce((sum,x)=>sum+Number(x.amount||0),0);
  document.getElementById('modal').innerHTML=`<div class="modal" style="width:min(1120px,100%)">
    <div class="section-head"><div><h3 style="margin-bottom:4px">套組明細帳｜${esc(b.code||'')}</h3><div class="muted">${esc(b.product_name||'')}｜${esc(ownerName(b.owner_id))}｜${statusPill(b.status)}</div></div><button class="btn" onclick="closeModal()">關閉</button></div>
    <div class="grid" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-top:14px">
@@ -273,6 +286,10 @@ function openBundleLedger(id){
      <div class="report-chip"><span>銷售筆數</span><b>${rows.length}</b></div>
      <div class="report-chip"><span>系統銷售抽數</span><b>${salesDraws}</b></div>
      <div class="report-chip"><span>歷史已刮基準</span><b>${historical}</b></div>
+   </div>
+   <div class="section" style="margin-top:14px">
+     <div class="section-head"><h3>付款方式收款明細</h3><b>實際已收 ${money(netReceived)}</b></div>
+     ${paymentSummary.length?`<div class="grid">${paymentSummary.map(p=>`<div class="kpi"><div class="label">${esc(p.method)}</div><div class="value">${money(p.amount)}</div></div>`).join('')}</div>`:'<div class="empty">目前沒有已收款紀錄</div>'}
    </div>
    <div class="table-wrap"><table class="table"><thead><tr><th>銷售日期</th><th>抽數</th><th>一抽價格</th><th>折扣</th><th>銷售額</th><th>結帳方式</th><th>累積抽數</th><th>累積營收</th><th>填表人</th><th>備註</th><th>操作</th></tr></thead>
    <tbody>${ledgerRows.map(x=>`<tr><td>${esc(x.sale_date||'')}</td><td>${Number(x.draws||0)}</td><td>${money(x.unit_price)}</td><td><span class="discount-value">−${money(Math.abs(Number(x.discount||0)))}</span></td><td><b>${money(x.revenue)}</b></td><td>${paymentDetailHtml(x)}</td><td>${x._cumDraws}${target!=null?` / ${target}`:''}</td><td><b>${money(x._cumRevenue)}</b></td><td>${esc(x.entered_by||'')}</td><td>${esc(x.note||'')}</td><td><button class="btn" onclick="openSaleEdit('${x.id}')">編輯</button></td></tr>`).join('')}</tbody></table></div>
